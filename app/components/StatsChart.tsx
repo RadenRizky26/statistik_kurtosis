@@ -11,7 +11,9 @@ import {
   Title,
   Tooltip,
   Legend,
-  Filler
+  Filler,
+  ChartData,    // Import Type
+  ChartOptions  // Import Type
 } from 'chart.js';
 import { Line, Bar } from 'react-chartjs-2';
 
@@ -27,37 +29,45 @@ ChartJS.register(
   Filler
 );
 
-interface HistogramResult { bins: { label: string; count: number; }[]; min: number; max: number; binWidth: number; }
+// --- DEFINISI TIPE DATA ---
+interface HistogramBin { label: string; count: number; }
+interface HistogramResult { bins: HistogramBin[]; min: number; max: number; binWidth: number; }
 interface StatsResult { mean: number; stdDev: number; skewness: number; kurtosis: number; detailedTable: any[]; }
 interface StatsChartProps { stats: StatsResult; histogram: HistogramResult; rawData: number[]; }
 
 const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) => {
-  // HANYA ADA 2 TAB: HISTOGRAM & OGIVE
   const [activeTab, setActiveTab] = useState<'histogram' | 'ogive'>('histogram');
+
+  // 1. SAFETY CHECK (PENTING: Mencegah crash saat loading)
+  if (!histogram || !histogram.bins || !stats || !rawData) {
+    return <div className="p-4 text-center text-gray-400 text-sm">Memuat grafik...</div>;
+  }
+
   const { mean, stdDev } = stats;
   const totalData = rawData.length;
 
   const binLabels = histogram.bins.map(bin => bin.label);
   const binCounts = histogram.bins.map(bin => bin.count);
 
-  // --- 1. DATA KURVA NORMAL (Untuk Histogram) ---
+  // --- 2. DATA KURVA NORMAL (Untuk Histogram) ---
   const normalCurvePoints = histogram.bins.map((bin) => {
-     const x_val = parseFloat(bin.label); 
-     const effectiveStd = stdDev || 1;
-     const exponent = -0.5 * Math.pow((x_val - mean) / effectiveStd, 2);
-     const pdf = (1 / (effectiveStd * Math.sqrt(2 * Math.PI))) * Math.exp(exponent);
-     return pdf * totalData * histogram.binWidth;
+      const x_val = parseFloat(bin.label); 
+      const effectiveStd = stdDev || 1;
+      const exponent = -0.5 * Math.pow((x_val - mean) / effectiveStd, 2);
+      const pdf = (1 / (effectiveStd * Math.sqrt(2 * Math.PI))) * Math.exp(exponent);
+      // Scaling agar tingginya sesuai frekuensi histogram
+      return pdf * totalData * histogram.binWidth;
   });
 
-  // --- 2. DATA OGIVE (Untuk Tab Baru) ---
-  // Ogive Positif (Meningkat)
+  // --- 3. DATA OGIVE (Kumulatif) ---
+  // Ogive Positif (Kumulatif Meningkat)
   let cumPos = 0;
   const ogivePositive = binCounts.map(count => {
     cumPos += count;
     return cumPos;
   });
 
-  // Ogive Negatif (Menurun)
+  // Ogive Negatif (Kumulatif Menurun)
   let cumNeg = totalData;
   const ogiveNegative = binCounts.map(count => {
     const val = cumNeg;
@@ -65,15 +75,23 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
     return val;
   });
 
-  // --- CONFIG CHART ---
-
-  const commonScales = {
-    y: { beginAtZero: true, grid: { color: '#f1f5f9' }, title: { display: true, text: 'Frekuensi' } },
-    x: { type: 'category', grid: { display: false }, title: { display: true, text: 'Nilai Tengah (X)' }, ticks: { autoSkip: false } }
+  // --- 4. CONFIG CHART (Type Safe) ---
+  const commonScales: ChartOptions['scales'] = {
+    y: { 
+      beginAtZero: true, 
+      grid: { color: '#f1f5f9' }, 
+      title: { display: true, text: 'Frekuensi' } 
+    },
+    x: { 
+      type: 'category', 
+      grid: { display: false }, 
+      title: { display: true, text: 'Nilai Tengah (X)' }, 
+      ticks: { autoSkip: false } 
+    }
   };
 
-  // DATA TAB 1: HISTOGRAM
-  const histogramData = {
+  // DATA TAB 1: HISTOGRAM (Mixed: Line + Bar)
+  const histogramData: ChartData<'bar' | 'line', number[], string> = {
     labels: binLabels,
     datasets: [
       {
@@ -101,8 +119,8 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
     ],
   };
 
-  // DATA TAB 2: OGIVE
-  const ogiveData = {
+  // DATA TAB 2: OGIVE (Line Only)
+  const ogiveData: ChartData<'line', number[], string> = {
     labels: binLabels,
     datasets: [
       {
@@ -134,7 +152,7 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
 
   return (
     <div className="flex flex-col h-full">
-       {/* TAB SWITCHER (Hanya 2 Tombol) */}
+       {/* TAB SWITCHER */}
        <div className="flex gap-2 mb-4 bg-slate-100 p-1.5 rounded-lg w-fit border border-slate-200">
           <button 
             onClick={() => setActiveTab('histogram')} 
@@ -154,7 +172,8 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
        <div className="relative w-full h-full min-h-[300px]">
           {activeTab === 'histogram' ? (
              <Bar 
-                data={histogramData} 
+                // Casting aman: "Data ini adalah campuran Bar & Line, tapi tolong terima di komponen Bar"
+                data={histogramData as ChartData<'bar', number[], string>} 
                 options={{ 
                   responsive: true, 
                   maintainAspectRatio: false, 
@@ -162,7 +181,7 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
                     legend: { position: 'bottom', labels: { font: { size: 11 } } },
                     title: { display: true, text: 'Distribusi Frekuensi & Normal', color: '#94a3b8', font: { weight: 'normal' } } 
                   },
-                  scales: commonScales as any 
+                  scales: commonScales 
                 }} 
              />
              
@@ -179,10 +198,9 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
                   scales: {
                     ...commonScales,
                     y: { ...commonScales.y, title: { display: true, text: 'Frekuensi Kumulatif' } }
-                  } as any 
+                  } as ChartOptions['scales'] // Casting Type Safe
                 }} 
              />
-             
           )}
        </div>
     </div>
