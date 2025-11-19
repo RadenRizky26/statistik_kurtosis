@@ -15,7 +15,9 @@ const StatsTable: React.FC<StatsTableProps> = ({ stats }) => {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
+      
+      {/* 1. RINGKASAN STATISTIK */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="border border-slate-200 rounded-lg overflow-hidden">
           <div className="bg-slate-100 px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase text-center">Pusat & Sebaran</div>
@@ -35,7 +37,9 @@ const StatsTable: React.FC<StatsTableProps> = ({ stats }) => {
         </div>
       </div>
 
+      {/* 2. TABEL DISTRIBUSI FREKUENSI (SIMPLE) */}
       {stats.detailedTable && stats.detailedTable.length > 0 && (
+        <>
         <div className="border border-slate-200 rounded-lg overflow-hidden">
            <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex justify-between items-center">
               <span className="font-bold text-slate-700 text-xs">Tabel Distribusi (Coding)</span>
@@ -59,7 +63,7 @@ const StatsTable: React.FC<StatsTableProps> = ({ stats }) => {
                    <tr key={idx} className={row.u === 0 ? "bg-yellow-50" : "hover:bg-slate-50"}>
                      <td className="py-1 px-2 text-left font-mono text-slate-600">{row.interval}</td>
                      <td className="py-1 px-2 text-center">{row.mid}</td>
-                     <td className="py-1 px-2 text-center font-bold text-indigo-600">{row.freq}</td>
+                     <td className="py-1 px-2 text-center font-bold">{row.freq}</td>
                      <td className="py-1 px-2 text-center font-mono text-indigo-800 bg-indigo-50/20">{row.u}</td>
                      <td className="py-1 px-2 text-center text-slate-400">{row.u2}</td>
                      <td className="py-1 px-2 text-center font-mono text-indigo-800 bg-indigo-50/20">{row.fu}</td>
@@ -79,6 +83,54 @@ const StatsTable: React.FC<StatsTableProps> = ({ stats }) => {
              </table>
            </div>
         </div>
+
+        {/* 3. TABEL PERHITUNGAN MOMEN (BARU - SESUAI REQUEST) */}
+        <div className="border border-slate-200 rounded-lg overflow-hidden">
+           <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex justify-between">
+              <span className="font-bold text-slate-700 text-xs">Tabel Perhitungan Momen (Coding $c$)</span>
+              <span className="text-[10px] font-mono text-slate-500">c=0 pada {stats.detailedTable.find((r:any)=>r.u===0)?.interval}</span>
+           </div>
+           <div className="overflow-auto max-h-[400px] custom-scrollbar">
+             <table className="w-full text-xs text-right relative">
+               <thead className="bg-white text-slate-500 font-bold sticky top-0 z-10 shadow-sm text-[10px]">
+                 <tr>
+                   <th className="py-2 px-2 text-left bg-white min-w-[70px]">DATA</th>
+                   <th className="py-2 px-2 bg-white text-center">f</th>
+                   <th className="py-2 px-2 bg-indigo-50 text-center text-indigo-700">c</th>
+                   <th className="py-2 px-2 bg-indigo-50 text-center text-indigo-700">fc</th>
+                   <th className="py-2 px-2 bg-white text-center">fc²</th>
+                   <th className="py-2 px-2 bg-white text-center">fc³</th>
+                   <th className="py-2 px-2 bg-white text-center">fc⁴</th>
+                 </tr>
+               </thead>
+               <tbody className="divide-y divide-slate-100 text-[11px]">
+                 {stats.detailedTable.map((row: any, idx: number) => (
+                   <tr key={idx} className={row.u === 0 ? "bg-yellow-50" : "hover:bg-slate-50"}>
+                     <td className="py-1.5 px-2 text-left font-mono text-slate-600 whitespace-nowrap">{row.interval}</td>
+                     <td className="py-1.5 px-2 text-center font-bold text-slate-700">{row.freq}</td>
+                     <td className="py-1.5 px-2 text-center font-mono bg-indigo-50/20">{row.u}</td>
+                     <td className="py-1.5 px-2 text-center font-mono bg-indigo-50/20 font-bold text-indigo-700">{row.fu}</td>
+                     <td className="py-1.5 px-2 text-center text-slate-500">{row.fu2}</td>
+                     <td className="py-1.5 px-2 text-center text-slate-500">{row.fu3}</td>
+                     <td className="py-1.5 px-2 text-center text-slate-500">{row.fu4}</td>
+                   </tr>
+                 ))}
+               </tbody>
+               <tfoot className="bg-slate-50 font-bold text-slate-800 sticky bottom-0 text-[10px]">
+                 <tr>
+                   <td className="py-2 px-2 text-left">JUMLAH</td>
+                   <td className="py-2 px-2 text-center">{stats.tableTotals.freq}</td>
+                   <td className="py-2 px-2 text-center">-</td>
+                   <td className="py-2 px-2 text-center text-indigo-700">{stats.tableTotals.fu}</td>
+                   <td className="py-2 px-2 text-center">{stats.tableTotals.fu2}</td>
+                   <td className="py-2 px-2 text-center">{stats.tableTotals.fu3}</td>
+                   <td className="py-2 px-2 text-center">{stats.tableTotals.fu4}</td>
+                 </tr>
+               </tfoot>
+             </table>
+           </div>
+        </div>
+        </>
       )}
     </div>
   );
