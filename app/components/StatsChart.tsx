@@ -1,141 +1,190 @@
 "use client";
 
-import React from 'react';
-import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, LineElement, PointElement, Filler } from 'chart.js';
-import { Bar, Chart } from 'react-chartjs-2';
-import { BoxPlotController, BoxAndWiskers } from '@sgratzl/chartjs-chart-boxplot'; 
+import React, { useState } from 'react';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler
+} from 'chart.js';
+import { Line, Bar } from 'react-chartjs-2';
 
-// Register komponen Chart.js
-ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, LineElement, PointElement, Filler, BoxPlotController, BoxAndWiskers);
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler
+);
 
 interface HistogramResult { bins: { label: string; count: number; }[]; min: number; max: number; binWidth: number; }
-interface StatsResult { mean: number; stdDev: number; skewness: number; kurtosis: number; }
-interface StatsChartProps {
-  stats: StatsResult;
-  histogram: HistogramResult;
-  rawData: number[];
-}
-
-const normalPdf = (x: number, mean: number, stdDev: number): number => {
-  if (stdDev === 0) return 0;
-  const exponent = -0.5 * Math.pow((x - mean) / stdDev, 2);
-  const coefficient = 1 / (stdDev * Math.sqrt(2 * Math.PI));
-  return coefficient * Math.exp(exponent);
-};
+interface StatsResult { mean: number; stdDev: number; skewness: number; kurtosis: number; detailedTable: any[]; }
+interface StatsChartProps { stats: StatsResult; histogram: HistogramResult; rawData: number[]; }
 
 const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) => {
+  // HANYA ADA 2 TAB: HISTOGRAM & OGIVE
+  const [activeTab, setActiveTab] = useState<'histogram' | 'ogive'>('histogram');
   const { mean, stdDev } = stats;
-  
-  // Setup data Histogram & Kurva Normal
-  const binLabels = histogram.bins.map((bin) => {
-    const start = parseFloat(bin.label);
-    const end = start + histogram.binWidth;
-    return `${start.toFixed(1)}-${end.toFixed(1)}`;
-  });
-  
+  const totalData = rawData.length;
+
+  const binLabels = histogram.bins.map(bin => bin.label);
   const binCounts = histogram.bins.map(bin => bin.count);
 
+  // --- 1. DATA KURVA NORMAL (Untuk Histogram) ---
   const normalCurvePoints = histogram.bins.map((bin) => {
-     const x_val = parseFloat(bin.label) + histogram.binWidth / 2;
-     const pdf = normalPdf(x_val, mean, stdDev);
-     return pdf * rawData.length * histogram.binWidth;
+     const x_val = parseFloat(bin.label); 
+     const effectiveStd = stdDev || 1;
+     const exponent = -0.5 * Math.pow((x_val - mean) / effectiveStd, 2);
+     const pdf = (1 / (effectiveStd * Math.sqrt(2 * Math.PI))) * Math.exp(exponent);
+     return pdf * totalData * histogram.binWidth;
   });
 
+  // --- 2. DATA OGIVE (Untuk Tab Baru) ---
+  // Ogive Positif (Meningkat)
+  let cumPos = 0;
+  const ogivePositive = binCounts.map(count => {
+    cumPos += count;
+    return cumPos;
+  });
+
+  // Ogive Negatif (Menurun)
+  let cumNeg = totalData;
+  const ogiveNegative = binCounts.map(count => {
+    const val = cumNeg;
+    cumNeg -= count;
+    return val;
+  });
+
+  // --- CONFIG CHART ---
+
+  const commonScales = {
+    y: { beginAtZero: true, grid: { color: '#f1f5f9' }, title: { display: true, text: 'Frekuensi' } },
+    x: { type: 'category', grid: { display: false }, title: { display: true, text: 'Nilai Tengah (X)' }, ticks: { autoSkip: false } }
+  };
+
+  // DATA TAB 1: HISTOGRAM
   const histogramData = {
     labels: binLabels,
     datasets: [
       {
         type: 'line' as const,
-        label: 'Kurva Normal Teoretis',
+        label: 'Kurva Normal',
         data: normalCurvePoints,
-        borderColor: '#4f46e5', 
+        borderColor: '#4f46e5', // Indigo
         borderWidth: 2,
         pointRadius: 0,
         tension: 0.4,
-        fill: false,
         order: 1,
+        fill: false,
       },
       {
         type: 'bar' as const,
-        label: 'Frekuensi Data',
+        label: 'Frekuensi',
         data: binCounts,
-        backgroundColor: 'rgba(199, 210, 254, 0.5)', 
-        borderColor: 'rgba(99, 102, 241, 1)', 
+        backgroundColor: 'rgba(199, 210, 254, 0.6)',
+        borderColor: '#4f46e5',
         borderWidth: 1,
-        hoverBackgroundColor: 'rgba(99, 102, 241, 0.7)',
         order: 2,
+        barPercentage: 1.0,
+        categoryPercentage: 1.0
       },
     ],
   };
 
-  // Setup data Box Plot
-  const boxPlotData = {
-    labels: ['Distribusi Data'],
-    datasets: [{
-      label: 'Box Plot',
-      data: [rawData],
-      backgroundColor: 'rgba(165, 180, 252, 0.5)',
-      borderColor: '#4338ca',
-      borderWidth: 1.5,
-      outlierColor: '#ef4444',
-      outlierRadius: 4,
-      itemRadius: 3,
-      padding: 20
-    }]
+  // DATA TAB 2: OGIVE
+  const ogiveData = {
+    labels: binLabels,
+    datasets: [
+      {
+        label: 'Ogive Positif (≤)',
+        data: ogivePositive,
+        borderColor: '#059669', // Emerald Green
+        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+        borderWidth: 2,
+        pointRadius: 4,
+        pointBackgroundColor: '#fff',
+        pointBorderColor: '#059669',
+        tension: 0.3,
+        fill: false
+      },
+      {
+        label: 'Ogive Negatif (≥)',
+        data: ogiveNegative,
+        borderColor: '#dc2626', // Red
+        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+        borderWidth: 2,
+        pointRadius: 4,
+        pointBackgroundColor: '#fff',
+        pointBorderColor: '#dc2626',
+        tension: 0.3,
+        fill: false
+      }
+    ]
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-      
-      {/* Chart 1: Histogram */}
-      <div className="flex flex-col bg-white rounded-lg">
-        <div className="mb-4">
-          <h3 className="text-base font-semibold text-gray-800">Histogram & Kurva Normal</h3>
-          <p className="text-xs text-gray-500">Visualisasi bentuk distribusi data dibandingkan kurva lonceng ideal.</p>
-        </div>
-        <div className="relative h-64 w-full border border-dashed border-gray-200 rounded-lg p-2">
-          <Bar 
-            data={histogramData} 
-            options={{
-              maintainAspectRatio: false,
-              interaction: { mode: 'index', intersect: false },
-              plugins: {
-                legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } },
-                tooltip: { backgroundColor: '#1e1b4b', padding: 10, cornerRadius: 4 }
-              },
-              scales: {
-                y: { grid: { display: true, color: '#f3f4f6' }, beginAtZero: true },
-                x: { grid: { display: false } }
-              }
-            }} 
-          />
-        </div>
-      </div>
+    <div className="flex flex-col h-full">
+       {/* TAB SWITCHER (Hanya 2 Tombol) */}
+       <div className="flex gap-2 mb-4 bg-slate-100 p-1.5 rounded-lg w-fit border border-slate-200">
+          <button 
+            onClick={() => setActiveTab('histogram')} 
+            className={`px-4 py-1.5 text-[10px] font-bold rounded-md transition-all ${activeTab === 'histogram' ? 'bg-white shadow-sm text-indigo-600 border border-slate-100' : 'text-slate-500 hover:text-indigo-500'}`}
+          >
+            HISTOGRAM
+          </button>
+          <button 
+            onClick={() => setActiveTab('ogive')} 
+            className={`px-4 py-1.5 text-[10px] font-bold rounded-md transition-all ${activeTab === 'ogive' ? 'bg-white shadow-sm text-emerald-600 border border-slate-100' : 'text-slate-500 hover:text-emerald-500'}`}
+          >
+            OGIVE (KUMULATIF)
+          </button>
+       </div>
 
-      {/* Chart 2: Box Plot */}
-      <div className="flex flex-col bg-white rounded-lg">
-        <div className="mb-4">
-          <h3 className="text-base font-semibold text-gray-800">Box Plot (Diagram Kotak)</h3>
-          <p className="text-xs text-gray-500">Deteksi visual untuk outlier dan penyebaran kuartil.</p>
-        </div>
-        <div className="relative h-64 w-full border border-dashed border-gray-200 rounded-lg p-2 flex items-center justify-center">
-           <Chart 
-              type='boxplot' 
-              data={boxPlotData} 
-              options={{
-                maintainAspectRatio: false,
-                plugins: {
-                  legend: { display: false },
-                  tooltip: { backgroundColor: '#1e1b4b' }
-                },
-                scales: {
-                   y: { title: { display: true, text: 'Nilai' } }
-                }
-              } as any} 
-            />
-        </div>
-      </div>
-
+       {/* CHART AREA */}
+       <div className="relative w-full h-full min-h-[300px]">
+          {activeTab === 'histogram' ? (
+             <Bar 
+                data={histogramData} 
+                options={{ 
+                  responsive: true, 
+                  maintainAspectRatio: false, 
+                  plugins: { 
+                    legend: { position: 'bottom', labels: { font: { size: 11 } } },
+                    title: { display: true, text: 'Distribusi Frekuensi & Normal', color: '#94a3b8', font: { weight: 'normal' } } 
+                  },
+                  scales: commonScales as any 
+                }} 
+             />
+             
+          ) : (
+             <Line 
+                data={ogiveData} 
+                options={{ 
+                  responsive: true, 
+                  maintainAspectRatio: false, 
+                  plugins: { 
+                    legend: { position: 'bottom', labels: { font: { size: 11 } } },
+                    title: { display: true, text: 'Titik Potong = Letak Median', color: '#94a3b8', font: { weight: 'normal' } } 
+                  },
+                  scales: {
+                    ...commonScales,
+                    y: { ...commonScales.y, title: { display: true, text: 'Frekuensi Kumulatif' } }
+                  } as any 
+                }} 
+             />
+             
+          )}
+       </div>
     </div>
   );
 };
