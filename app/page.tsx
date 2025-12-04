@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useReactToPrint } from 'react-to-print';
 import Image from 'next/image';
-import iconSrc from './icon.png'; // Pastikan icon.png ada di folder app/
+import iconSrc from './icon.png'; 
 
 import StatsChart from './components/StatsChart';
 import StatsTable from './components/StatsTable';
@@ -11,14 +11,14 @@ import AnalysisReport from './components/AnalysisReport';
 import Interpretation from './components/Interpretation';
 
 // ==========================================
-// 1. TIPE DATA & INTERFACE (STRICT & CLEAN)
+// 1. TIPE DATA & INTERFACE (FIXED FOR BUILD)
 // ==========================================
 
 export interface DetailedRow { 
   interval: string; 
   mid: number; 
-  f: number;    // Frekuensi
-  freq: number; // Alias
+  f: number;    
+  freq: number; 
   u: number; u2: number; u3: number; u4: number; 
   fu: number; fu2: number; fu3: number; fu4: number; 
   absDev: number; fAbsDev: number;
@@ -30,7 +30,7 @@ export interface HistogramResult {
   min: number; max: number; binWidth: number; 
 }
 
-// Interface Akumulator untuk perhitungan sementara
+// Interface Akumulator
 interface SumsAccumulator {
   fu: number; 
   fu2: number; 
@@ -38,7 +38,7 @@ interface SumsAccumulator {
   fu4: number;
 }
 
-// Interface Total Akhir yang dikirim ke komponen
+// Interface Total Akhir
 export interface TableTotals extends SumsAccumulator {
   freq: number;
   f: number;
@@ -51,8 +51,12 @@ export interface StatsResult {
   meanDeviation: number; coeffVariation: number; 
   
   sk1: number; sk2: number; 
-  gamma1: number; gamma2: number; 
+  gamma1: number; gamma2: number; // Nama Baru (Matematika)
   sk4: number; sk5: number; 
+
+  // ALIAS PENTING (Agar Build Tidak Error)
+  skewness: number; 
+  kurtosis: number;
 
   q1: number; q3: number; 
   p10: number; p90: number;
@@ -183,20 +187,19 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
   const min = Math.min(...rawDataArray); const max = Math.max(...rawDataArray);
   const bins = data.map(d => ({ label: d.mid.toString(), count: d.f }));
 
-  // Pembuatan Objek Total secara Eksplisit (FIX TYPE ERROR)
   const finalTotals: TableTotals = {
     freq: n,
     f: n,
-    fu: sums.fu,
-    fu2: sums.fu2,
-    fu3: sums.fu3,
-    fu4: sums.fu4,
+    ...sums,
     fAbsDev: sumFAbsDev
   };
 
   return {
     mean, median: medData.res, mode, stdDev, variance, meanDeviation, coeffVariation,
     sk1, sk2, gamma1, gamma2, sk4, sk5,
+    // FIX BUILD: Tambahkan alias skewness & kurtosis
+    skewness: gamma1, 
+    kurtosis: gamma2,
     q1: q1Data.res, q3: q3Data.res, p10, p90,
     min, max, range: max - min,
     histogram: { bins, min: data[0]?.lower || 0, max: data[data.length-1]?.upper || 0, binWidth: p },
@@ -256,6 +259,7 @@ const calculateSingleStats = (rows: DataRow[]): StatsResult => {
   const mu4_u = sums.fu4 / n;
 
   const mean = assumedMean + (p * mu1_u);
+  
   const m2_x = (mu2_u - Math.pow(mu1_u, 2));
   const m3_x = (mu3_u - 3 * mu1_u * mu2_u + 2 * Math.pow(mu1_u, 3));
   const m4_x = (mu4_u - 4 * mu1_u * mu3_u + 6 * Math.pow(mu1_u, 2) * mu2_u - 3 * Math.pow(mu1_u, 4));
@@ -303,16 +307,16 @@ const calculateSingleStats = (rows: DataRow[]): StatsResult => {
   const finalTotals: TableTotals = {
     freq: n,
     f: n,
-    fu: sums.fu,
-    fu2: sums.fu2,
-    fu3: sums.fu3,
-    fu4: sums.fu4,
+    ...sums,
     fAbsDev: sumFAbsDev
   };
 
   return {
     mean, median, mode, stdDev, variance, meanDeviation, coeffVariation,
     sk1, sk2, gamma1, gamma2, sk4, sk5,
+    // FIX BUILD: Tambahkan alias
+    skewness: gamma1,
+    kurtosis: gamma2,
     q1, q3, p10, p90,
     min, max, range: max - min,
     histogram: { bins, min: data[0]?.lower || 0, max: data[data.length-1]?.upper || 0, binWidth: 1 },
@@ -389,7 +393,7 @@ const Home: React.FC = () => {
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans text-sm">
       
-      {/* GLOBAL STYLE FOR PRINT - FIX GRAFIK KEPOTONG */}
+      {/* GLOBAL STYLE FOR PRINT */}
       <style jsx global>{`
         @media print {
           @page {
@@ -400,13 +404,11 @@ const Home: React.FC = () => {
             background-color: white;
             color: black;
           }
-          /* Class Sakti: Mencegah elemen dipotong di tengah halaman */
           .print\\:break-inside-avoid {
             break-inside: avoid !important;
             page-break-inside: avoid !important;
-            display: block; /* Pastikan block element */
+            display: block; 
           }
-          /* Memastikan konten tidak tersembunyi */
           .print\\:overflow-visible {
             overflow: visible !important;
           }
@@ -451,7 +453,6 @@ const Home: React.FC = () => {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* SIDEBAR INPUT */}
           <div className="lg:col-span-4 xl:col-span-3 space-y-4 print:hidden">
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden sticky top-24">
               <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
@@ -482,7 +483,6 @@ const Home: React.FC = () => {
             </div>
           </div>
 
-          {/* MAIN CONTENT RESULT */}
           <div className="lg:col-span-8 xl:col-span-9 space-y-6 print:col-span-12 print:w-full">
              {results ? (
                 <div className="animate-fade-in space-y-6">
@@ -499,7 +499,6 @@ const Home: React.FC = () => {
                           <SummaryCard title="Skewness (Momen)" value={(results.gamma1 ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 3 })} sub={`Kurtosis: ${results.gamma2.toFixed(3)}`} icon="📐" color="text-amber-600 bg-amber-500" />
                       </div>
                       
-                      {/* FIX CHART PRINT: Tambahkan inline style page-break-inside: avoid */}
                       <div 
                         className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:overflow-visible print:break-inside-avoid"
                         style={{ pageBreakInside: 'avoid' }}
