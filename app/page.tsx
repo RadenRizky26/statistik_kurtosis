@@ -2,9 +2,8 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useReactToPrint } from 'react-to-print';
-import Image from 'next/image'; // Import komponen Image
-// Pastikan file icon.png sudah ada di dalam folder app/ agar import ini berhasil
-import iconSrc from './icon.png'; 
+import Image from 'next/image';
+import iconSrc from './icon.png'; // Pastikan icon.png ada di folder app/
 
 import StatsChart from './components/StatsChart';
 import StatsTable from './components/StatsTable';
@@ -12,14 +11,14 @@ import AnalysisReport from './components/AnalysisReport';
 import Interpretation from './components/Interpretation';
 
 // ==========================================
-// 1. TIPE DATA & INTERFACE (FIXED)
+// 1. TIPE DATA & INTERFACE (STRICT & CLEAN)
 // ==========================================
 
 export interface DetailedRow { 
   interval: string; 
   mid: number; 
   f: number;    // Frekuensi
-  freq: number; // Alias untuk kompatibilitas
+  freq: number; // Alias
   u: number; u2: number; u3: number; u4: number; 
   fu: number; fu2: number; fu3: number; fu4: number; 
   absDev: number; fAbsDev: number;
@@ -31,10 +30,18 @@ export interface HistogramResult {
   min: number; max: number; binWidth: number; 
 }
 
-// Interface yang lebih fleksibel untuk hasil reduce
-interface TotalsAccumulator {
-  freq: number; 
-  fu: number; fu2: number; fu3: number; fu4: number; 
+// Interface Akumulator untuk perhitungan sementara
+interface SumsAccumulator {
+  fu: number; 
+  fu2: number; 
+  fu3: number; 
+  fu4: number;
+}
+
+// Interface Total Akhir yang dikirim ke komponen
+export interface TableTotals extends SumsAccumulator {
+  freq: number;
+  f: number;
   fAbsDev: number;
 }
 
@@ -54,7 +61,7 @@ export interface StatsResult {
   histogram: HistogramResult; 
   rawDataArray: number[]; 
   detailedTable: DetailedRow[]; 
-  tableTotals: TotalsAccumulator; 
+  tableTotals: TableTotals; 
   
   codingP: number; assumedMean: number;
   mu1_u: number; mu2_u: number; mu3_u: number; mu4_u: number; 
@@ -70,10 +77,9 @@ interface DataRow { id: number; x: string; f: string; }
 type InputMode = 'single' | 'interval';
 
 // ==========================================
-// 2A. LOGIKA DATA KELOMPOK (INTERPOLASI)
+// 2A. LOGIKA DATA KELOMPOK
 // ==========================================
 const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
-  // 1. Parsing Data
   const data = rows.map(r => {
     const f = parseInt(r.f) || 0; 
     const cleanX = r.x.replace(/\s/g, '');
@@ -94,7 +100,6 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
   const n = data.reduce((acc, cur) => acc + cur.f, 0);
   const p = data.length > 0 ? (data[0].upper - data[0].lower + 1) : 1; 
 
-  // 2. Coding (u)
   let maxFreq = -1; let modeIdx = -1;
   data.forEach((d, i) => { if (d.f > maxFreq) { maxFreq = d.f; modeIdx = i; } });
   const assumedMean = data[modeIdx]?.mid || 0; 
@@ -106,8 +111,7 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
     currentFk += d.f;
     const u2 = u*u; const u3 = u*u*u; const u4 = u*u*u*u;
     return { 
-      interval: d.intervalString, mid: d.mid, 
-      f: d.f, freq: d.f, 
+      interval: d.intervalString, mid: d.mid, freq: d.f, f: d.f, 
       u, u2, u3, u4,
       fu: d.f * u, fu2: d.f * u2, fu3: d.f * u3, fu4: d.f * u4,
       fk: currentFk,
@@ -115,20 +119,19 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
     };
   });
 
-  // Calculate Sums explicitly to avoid spread type issues
-  const sumFu = tempTable.reduce((acc, cur) => acc + cur.fu, 0);
-  const sumFu2 = tempTable.reduce((acc, cur) => acc + cur.fu2, 0);
-  const sumFu3 = tempTable.reduce((acc, cur) => acc + cur.fu3, 0);
-  const sumFu4 = tempTable.reduce((acc, cur) => acc + cur.fu4, 0);
+  const sums: SumsAccumulator = tempTable.reduce((acc, cur) => ({
+     fu: acc.fu + cur.fu, 
+     fu2: acc.fu2 + cur.fu2,
+     fu3: acc.fu3 + cur.fu3, 
+     fu4: acc.fu4 + cur.fu4
+  }), { fu: 0, fu2: 0, fu3: 0, fu4: 0 });
 
-  // 3. Momen & Mean
-  const mu1_u = sumFu / n;
-  const mu2_u = sumFu2 / n;
-  const mu3_u = sumFu3 / n;
-  const mu4_u = sumFu4 / n;
+  const mu1_u = sums.fu / n;
+  const mu2_u = sums.fu2 / n;
+  const mu3_u = sums.fu3 / n;
+  const mu4_u = sums.fu4 / n;
 
   const mean = assumedMean + (p * mu1_u);
-  
   const m2_x = Math.pow(p, 2) * (mu2_u - Math.pow(mu1_u, 2));
   const m3_x = Math.pow(p, 3) * (mu3_u - 3 * mu1_u * mu2_u + 2 * Math.pow(mu1_u, 3));
   const m4_x = Math.pow(p, 4) * (mu4_u - 4 * mu1_u * mu3_u + 6 * Math.pow(mu1_u, 2) * mu2_u - 3 * Math.pow(mu1_u, 4));
@@ -138,7 +141,6 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
   const gamma1 = m3_x / Math.pow(stdDev, 3); 
   const gamma2 = m4_x / Math.pow(stdDev, 4); 
 
-  // 4. Interpolasi Posisi
   const getInterpolation = (target: number) => {
      let idx = 0;
      for(let i=0; i<tempTable.length; i++) { if (tempTable[i].fk >= target) { idx = i; break; } }
@@ -156,19 +158,16 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
   const p10 = getInterpolation(10 * n / 100).res;
   const p90 = getInterpolation(90 * n / 100).res;
 
-  // 5. Modus
   const d1 = data[modeIdx].f - (modeIdx > 0 ? data[modeIdx - 1].f : 0);
   const d2 = data[modeIdx].f - (modeIdx < data.length - 1 ? data[modeIdx + 1].f : 0);
   const modeL = data[modeIdx].lower - 0.5;
   const mode = modeL + p * (d1 / (d1 + d2));
 
-  // 6. Ukuran Lain
   const sk1 = (mean - mode) / stdDev;
   const sk2 = (3 * (mean - medData.res)) / stdDev;
   const sk4 = (q3Data.res + q1Data.res - 2 * medData.res) / (q3Data.res - q1Data.res); 
   const sk5 = (p90 + p10 - 2 * medData.res) / (p90 - p10); 
 
-  // 7. Simpangan Rata-rata (Finalisasi Tabel)
   const detailedTable = tempTable.map(row => {
     const absDev = Math.abs(row.mid - mean);
     const fAbsDev = row.f * absDev;
@@ -184,6 +183,17 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
   const min = Math.min(...rawDataArray); const max = Math.max(...rawDataArray);
   const bins = data.map(d => ({ label: d.mid.toString(), count: d.f }));
 
+  // Pembuatan Objek Total secara Eksplisit (FIX TYPE ERROR)
+  const finalTotals: TableTotals = {
+    freq: n,
+    f: n,
+    fu: sums.fu,
+    fu2: sums.fu2,
+    fu3: sums.fu3,
+    fu4: sums.fu4,
+    fAbsDev: sumFAbsDev
+  };
+
   return {
     mean, median: medData.res, mode, stdDev, variance, meanDeviation, coeffVariation,
     sk1, sk2, gamma1, gamma2, sk4, sk5,
@@ -191,15 +201,7 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
     min, max, range: max - min,
     histogram: { bins, min: data[0]?.lower || 0, max: data[data.length-1]?.upper || 0, binWidth: p },
     rawDataArray, detailedTable,
-    // Fix: Explicitly construct the object to match Interface
-    tableTotals: { 
-      freq: n, 
-      fu: sumFu, 
-      fu2: sumFu2, 
-      fu3: sumFu3, 
-      fu4: sumFu4, 
-      fAbsDev: sumFAbsDev 
-    },
+    tableTotals: finalTotals,
     codingP: p, assumedMean,
     mu1_u, mu2_u, mu3_u, mu4_u,
     m2_x, m3_x, m4_x,
@@ -211,10 +213,9 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
 };
 
 // ==========================================
-// 2B. LOGIKA DATA TUNGGAL (EXACT / DISKRET)
+// 2B. LOGIKA DATA TUNGGAL
 // ==========================================
 const calculateSingleStats = (rows: DataRow[]): StatsResult => {
-  // 1. Parsing
   const data = rows.map(r => {
     const f = parseInt(r.f) || 0; 
     const val = parseFloat(r.x.replace(/,/g, '.'));
@@ -224,13 +225,11 @@ const calculateSingleStats = (rows: DataRow[]): StatsResult => {
   const n = data.reduce((acc, cur) => acc + cur.f, 0);
   const p = 1;
 
-  // 2. Coding (u)
   let maxFreq = -1; let modeIdx = -1;
   data.forEach((d, i) => { if (d.f > maxFreq) { maxFreq = d.f; modeIdx = i; } });
   const assumedMean = data[modeIdx]?.mid || 0; 
 
   let currentFk = 0;
-  // Explicit Type: DetailedRow[]
   const tempTable: DetailedRow[] = data.map((d, i) => {
     const u = i - modeIdx; 
     currentFk += d.f;
@@ -244,20 +243,19 @@ const calculateSingleStats = (rows: DataRow[]): StatsResult => {
     };
   });
 
-  const sumFu = tempTable.reduce((acc, cur) => acc + cur.fu, 0);
-  const sumFu2 = tempTable.reduce((acc, cur) => acc + cur.fu2, 0);
-  const sumFu3 = tempTable.reduce((acc, cur) => acc + cur.fu3, 0);
-  const sumFu4 = tempTable.reduce((acc, cur) => acc + cur.fu4, 0);
+  const sums: SumsAccumulator = tempTable.reduce((acc, cur) => ({
+     fu: acc.fu + cur.fu, 
+     fu2: acc.fu2 + cur.fu2,
+     fu3: acc.fu3 + cur.fu3, 
+     fu4: acc.fu4 + cur.fu4
+  }), { fu: 0, fu2: 0, fu3: 0, fu4: 0 });
 
-  // 3. Momen & Mean
-  const mu1_u = sumFu / n;
-  const mu2_u = sumFu2 / n;
-  const mu3_u = sumFu3 / n;
-  const mu4_u = sumFu4 / n;
+  const mu1_u = sums.fu / n;
+  const mu2_u = sums.fu2 / n;
+  const mu3_u = sums.fu3 / n;
+  const mu4_u = sums.fu4 / n;
 
   const mean = assumedMean + (p * mu1_u);
-  
-  // Transformasi Momen
   const m2_x = (mu2_u - Math.pow(mu1_u, 2));
   const m3_x = (mu3_u - 3 * mu1_u * mu2_u + 2 * Math.pow(mu1_u, 3));
   const m4_x = (mu4_u - 4 * mu1_u * mu3_u + 6 * Math.pow(mu1_u, 2) * mu2_u - 3 * Math.pow(mu1_u, 4));
@@ -267,7 +265,6 @@ const calculateSingleStats = (rows: DataRow[]): StatsResult => {
   const gamma1 = m3_x / Math.pow(stdDev, 3); 
   const gamma2 = m4_x / Math.pow(stdDev, 4); 
 
-  // 4. Posisi (Exact)
   const getValueAtPos = (pos: number) => {
       for(let r of tempTable) { if(r.fk >= pos) return r.mid; }
       return 0;
@@ -282,16 +279,13 @@ const calculateSingleStats = (rows: DataRow[]): StatsResult => {
   const p10 = getValueAtPos(Math.ceil(n * 0.10));
   const p90 = getValueAtPos(Math.ceil(n * 0.90));
 
-  // 5. Modus
   const mode = data[modeIdx].mid;
 
-  // 6. Ukuran Lain
   const sk1 = (mean - mode) / stdDev;
   const sk2 = (3 * (mean - median)) / stdDev;
   const sk4 = (q3 + q1 - 2 * median) / (q3 - q1); 
   const sk5 = (p90 + p10 - 2 * median) / (p90 - p10); 
 
-  // 7. Simpangan Rata-rata
   const detailedTable = tempTable.map(row => {
     const absDev = Math.abs(row.mid - mean);
     const fAbsDev = row.f * absDev;
@@ -306,6 +300,16 @@ const calculateSingleStats = (rows: DataRow[]): StatsResult => {
   const min = Math.min(...rawDataArray); const max = Math.max(...rawDataArray);
   const bins = data.map(d => ({ label: d.mid.toString(), count: d.f }));
 
+  const finalTotals: TableTotals = {
+    freq: n,
+    f: n,
+    fu: sums.fu,
+    fu2: sums.fu2,
+    fu3: sums.fu3,
+    fu4: sums.fu4,
+    fAbsDev: sumFAbsDev
+  };
+
   return {
     mean, median, mode, stdDev, variance, meanDeviation, coeffVariation,
     sk1, sk2, gamma1, gamma2, sk4, sk5,
@@ -313,14 +317,7 @@ const calculateSingleStats = (rows: DataRow[]): StatsResult => {
     min, max, range: max - min,
     histogram: { bins, min: data[0]?.lower || 0, max: data[data.length-1]?.upper || 0, binWidth: 1 },
     rawDataArray, detailedTable,
-    tableTotals: { 
-      freq: n, 
-      fu: sumFu, 
-      fu2: sumFu2, 
-      fu3: sumFu3, 
-      fu4: sumFu4, 
-      fAbsDev: sumFAbsDev 
-    },
+    tableTotals: finalTotals,
     codingP: 1, assumedMean,
     mu1_u, mu2_u, mu3_u, mu4_u,
     m2_x, m3_x, m4_x,
@@ -379,7 +376,7 @@ const Home: React.FC = () => {
   const updateRow = (id: number, field: 'x' | 'f', value: string) => setRows(rows.map(r => r.id === id ? { ...r, [field]: value } : r));
 
   const SummaryCard = ({ title, value, icon, color, sub }: any) => (
-    <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex justify-between items-center transition-all hover:shadow-md">
+    <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex justify-between items-center transition-all hover:shadow-md print:break-inside-avoid print:shadow-none print:border">
       <div>
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">{title}</p>
           <p className="text-xl font-bold text-slate-800 mt-1">{value}</p>
@@ -392,10 +389,47 @@ const Home: React.FC = () => {
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans text-sm">
       
-      {/* HEADER UTAMA */}
+      {/* GLOBAL STYLE FOR PRINT - FIX GRAFIK KEPOTONG */}
+      <style jsx global>{`
+        @media print {
+          @page {
+            size: auto;
+            margin: 15mm;
+          }
+          body {
+            background-color: white;
+            color: black;
+          }
+          /* Class Sakti: Mencegah elemen dipotong di tengah halaman */
+          .print\\:break-inside-avoid {
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
+            display: block; /* Pastikan block element */
+          }
+          /* Memastikan konten tidak tersembunyi */
+          .print\\:overflow-visible {
+            overflow: visible !important;
+          }
+          .print\\:hidden {
+            display: none !important;
+          }
+          .print\\:w-full {
+            width: 100% !important;
+            max-width: none !important;
+          }
+          .print\\:col-span-12 {
+            grid-column: span 12 / span 12 !important;
+          }
+          .print\\:grid-cols-4 {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr) !important;
+            gap: 1rem;
+          }
+        }
+      `}</style>
+
       <header className="bg-white border-b border-slate-200 px-6 h-16 flex items-center justify-between shadow-sm sticky top-0 z-50 print:hidden">
         <div className="flex items-center gap-3">
-          {/* LOGO IMAGE */}
           <div className="relative w-8 h-8 flex-shrink-0">
              <Image 
                 src={iconSrc} 
@@ -464,22 +498,31 @@ const Home: React.FC = () => {
                           <SummaryCard title="Simpangan Baku" value={(results.stdDev ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 2 })} icon="📉" color="text-emerald-600 bg-emerald-500" />
                           <SummaryCard title="Skewness (Momen)" value={(results.gamma1 ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 3 })} sub={`Kurtosis: ${results.gamma2.toFixed(3)}`} icon="📐" color="text-amber-600 bg-amber-500" />
                       </div>
-                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
+                      
+                      {/* FIX CHART PRINT: Tambahkan inline style page-break-inside: avoid */}
+                      <div 
+                        className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:overflow-visible print:break-inside-avoid"
+                        style={{ pageBreakInside: 'avoid' }}
+                      >
                           <div className="bg-slate-50/80 px-5 py-3 border-b border-slate-100 flex justify-between items-center"><h3 className="font-bold text-xs text-slate-700 uppercase tracking-wider">Visualisasi</h3></div>
                           <div className="p-5 h-[350px] relative"><StatsChart stats={results} histogram={results.histogram} rawData={results.rawDataArray} /></div>
                       </div>
-                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
+
+                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:overflow-visible print:break-inside-avoid" style={{ pageBreakInside: 'avoid' }}>
                           <div className="bg-slate-50/80 px-5 py-3 border-b border-slate-100"><h3 className="font-bold text-xs text-slate-700 uppercase tracking-wider">Analisis Bentuk Kurva</h3></div>
                           <div className="p-5"><Interpretation skewness={results.gamma1} kurtosis={results.gamma2} /></div>
                       </div>
-                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
+
+                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:overflow-visible print:break-inside-avoid" style={{ pageBreakInside: 'avoid' }}>
                           <div className="bg-slate-50/80 px-5 py-3 border-b border-slate-100"><h3 className="font-bold text-xs text-slate-700 uppercase tracking-wider">Tabel Distribusi & Statistik Detail</h3></div>
                           <div className="p-5"><StatsTable stats={results} /></div>
                       </div>
-                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
+
+                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:overflow-visible print:break-inside-avoid" style={{ pageBreakInside: 'avoid' }}>
                           <div className="bg-indigo-50/80 px-5 py-3 border-b border-indigo-100"><h3 className="font-bold text-xs text-indigo-800 uppercase tracking-wider flex items-center gap-2"><span>📝</span> PROCESS (Langkah Pengerjaan 1-10)</h3></div>
                           <div className="p-5"><AnalysisReport stats={results} /></div>
                       </div>
+                      
                       <div className="hidden print:block mt-8 text-center text-[10px] text-slate-400 border-t pt-4">Dicetak dari Aplikasi StatistikPro • {new Date().getFullYear()}</div>
                    </div>
                 </div>
