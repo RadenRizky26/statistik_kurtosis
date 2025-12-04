@@ -1,282 +1,388 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from 'react';
-import Papa from 'papaparse';
 import { useReactToPrint } from 'react-to-print';
+import Image from 'next/image'; // Import komponen Image
+// Pastikan file icon.png sudah ada di dalam folder app/ agar import ini berhasil
+import iconSrc from './icon.png'; 
+
 import StatsChart from './components/StatsChart';
 import StatsTable from './components/StatsTable';
-import Interpretation from './components/Interpretation';
 import AnalysisReport from './components/AnalysisReport';
+import Interpretation from './components/Interpretation';
 
 // ==========================================
-// 1. INTERFACE & TIPE DATA
+// 1. TIPE DATA & INTERFACE (FIXED)
 // ==========================================
-interface DetailedRow { 
-  interval: string; mid: number; freq: number; 
+
+export interface DetailedRow { 
+  interval: string; 
+  mid: number; 
+  f: number;    // Frekuensi
+  freq: number; // Alias untuk kompatibilitas
   u: number; u2: number; u3: number; u4: number; 
   fu: number; fu2: number; fu3: number; fu4: number; 
-  fx: number; fk: number;
+  absDev: number; fAbsDev: number;
+  fk: number;
 }
 
-interface HistogramResult { bins: { label: string; count: number; }[]; min: number; max: number; binWidth: number; }
+export interface HistogramResult { 
+  bins: { label: string; count: number; }[]; 
+  min: number; max: number; binWidth: number; 
+}
 
-interface StatsResult { 
-  mean: number; median: number; mode: number[] | string[] | number; stdDev: number; variance: number; min: number; max: number; range: number; 
+// Interface yang lebih fleksibel untuk hasil reduce
+interface TotalsAccumulator {
+  freq: number; 
+  fu: number; fu2: number; fu3: number; fu4: number; 
+  fAbsDev: number;
+}
+
+export interface StatsResult { 
+  mean: number; median: number; mode: number | number[]; 
+  stdDev: number; variance: number; 
+  meanDeviation: number; coeffVariation: number; 
   
-  q1: number; q3: number; iqr: number; p10: number; p90: number; 
-  percentileKurtosis: number; // K
-  
-  // Momen & Alpha (Sesuai Gambar)
-  alpha3: number; alpha4: number; 
-  moments: { m1: number; m2: number; m3: number; m4: number }; 
-  
-  lowerBound: number; upperBound: number; outliers: number[]; 
-  skewness: number; kurtosis: number; // Alias untuk Chart
-  
-  histogram: HistogramResult; rawDataArray: number[]; 
+  sk1: number; sk2: number; 
+  gamma1: number; gamma2: number; 
+  sk4: number; sk5: number; 
+
+  q1: number; q3: number; 
+  p10: number; p90: number;
+
+  min: number; max: number; range: number; 
+  histogram: HistogramResult; 
+  rawDataArray: number[]; 
   detailedTable: DetailedRow[]; 
-  tableTotals: { freq: number; fx: number; fu: number; fu2: number; fu3: number; fu4: number; };
+  tableTotals: TotalsAccumulator; 
   
-  // Data tambahan untuk Step-by-Step Solver
-  inputMode: 'single' | 'interval';
-  codingP?: number; // Panjang kelas (p)
-  assumedMean?: number; // Rata-rata sementara (xs)
+  codingP: number; assumedMean: number;
+  mu1_u: number; mu2_u: number; mu3_u: number; mu4_u: number; 
+  m2_x: number; m3_x: number; m4_x: number; 
+  
+  medL: number; medFk: number; medF: number;
+  q1L: number; q1Fk: number; q1F: number;
+  q3L: number; q3Fk: number; q3F: number;
+  modeL: number; modeD1: number; modeD2: number;
 }
 
 interface DataRow { id: number; x: string; f: string; }
 type InputMode = 'single' | 'interval';
 
-const round = (num: number) => parseFloat((num || 0).toFixed(4));
-
 // ==========================================
-// 2. LOGIKA MATEMATIKA
+// 2A. LOGIKA DATA KELOMPOK (INTERPOLASI)
 // ==========================================
-
-// --- A. DATA BERKELOMPOK (METODE CODING u / c) ---
 const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
+  // 1. Parsing Data
   const data = rows.map(r => {
-    const f = parseInt(r.f); const cleanX = r.x.replace(/\s/g, '');
+    const f = parseInt(r.f) || 0; 
+    const cleanX = r.x.replace(/\s/g, '');
     let lower = 0, upper = 0, mid = 0;
-    if (cleanX.includes('-')) { const parts = cleanX.split('-'); lower = parseFloat(parts[0]); upper = parseFloat(parts[1]); mid = (lower + upper) / 2; } 
-    else { lower = parseFloat(cleanX); upper = parseFloat(cleanX); mid = lower; }
+    if (cleanX.includes('-')) { 
+      const parts = cleanX.split('-'); 
+      lower = parseFloat(parts[0]); 
+      upper = parseFloat(parts[1]); 
+      mid = (lower + upper) / 2; 
+    } else {
+      lower = parseFloat(cleanX); 
+      upper = parseFloat(cleanX); 
+      mid = lower;
+    }
     return { lower, upper, mid, f, intervalString: cleanX };
   }).filter(d => !isNaN(d.mid) && d.f > 0);
 
-  const totalN = data.reduce((acc, cur) => acc + cur.f, 0);
-  const p = data.length > 0 ? (data[0].upper - data[0].lower + 1) : 1; // Panjang Kelas
+  const n = data.reduce((acc, cur) => acc + cur.f, 0);
+  const p = data.length > 0 ? (data[0].upper - data[0].lower + 1) : 1; 
 
-  // 1. Coding (u)
+  // 2. Coding (u)
   let maxFreq = -1; let modeIdx = -1;
   data.forEach((d, i) => { if (d.f > maxFreq) { maxFreq = d.f; modeIdx = i; } });
-  const assumedMean = data[modeIdx]?.mid || 0;
+  const assumedMean = data[modeIdx]?.mid || 0; 
 
   let currentFk = 0;
-  const detailedTable: DetailedRow[] = data.map((d, i) => {
+  
+  const tempTable: DetailedRow[] = data.map((d, i) => {
     const u = i - modeIdx; 
     currentFk += d.f;
-    const u2 = u*u; const u3 = u2*u; const u4 = u3*u;
+    const u2 = u*u; const u3 = u*u*u; const u4 = u*u*u*u;
     return { 
-      interval: d.intervalString, mid: d.mid, freq: d.f, fx: d.f * d.mid, fk: currentFk,
-      u, u2, u3, u4, 
-      fu: d.f * u, fu2: d.f * u2, fu3: d.f * u3, fu4: d.f * u4 
-    };
-  });
-
-  const T = detailedTable.reduce((acc, cur) => ({
-    freq: acc.freq + cur.freq, fx: acc.fx + cur.fx,
-    fu: acc.fu + cur.fu, fu2: acc.fu2 + cur.fu2, fu3: acc.fu3 + cur.fu3, fu4: acc.fu4 + cur.fu4
-  }), { freq: 0, fx: 0, fu: 0, fu2: 0, fu3: 0, fu4: 0 });
-
-  // 2. Momen Asal (m') & Momen Sentral (m)
-  const m1_tick = p * (T.fu / totalN);
-  const m2_tick = Math.pow(p, 2) * (T.fu2 / totalN);
-  const m3_tick = Math.pow(p, 3) * (T.fu3 / totalN);
-  const m4_tick = Math.pow(p, 4) * (T.fu4 / totalN);
-
-  const m1 = 0; 
-  const m2 = m2_tick - Math.pow(m1_tick, 2);
-  const m3 = m3_tick - 3 * m1_tick * m2_tick + 2 * Math.pow(m1_tick, 3);
-  const m4 = m4_tick - 4 * m1_tick * m3_tick + 6 * Math.pow(m1_tick, 2) * m2_tick - 3 * Math.pow(m1_tick, 4);
-
-  const stdDevPop = Math.sqrt(m2);
-  const alpha3 = m3 / Math.pow(stdDevPop, 3); 
-  const alpha4 = m4 / Math.pow(stdDevPop, 4); // Kurtosis Momen
-
-  // 3. Statistik Dasar
-  const mean = T.fx / totalN;
-  const getInterpolatedValue = (targetN: number) => {
-    let currentN = 0;
-    for (let i = 0; i < data.length; i++) {
-      const prevN = currentN; currentN += data[i].f;
-      if (currentN >= targetN) {
-        const intervalLength = (data[i].upper - data[i].lower) + 1; const lowerBoundary = data[i].lower - 0.5; 
-        return lowerBoundary + intervalLength * ((targetN - prevN) / data[i].f);
-      }
-    } return 0;
-  };
-  const median = getInterpolatedValue(totalN / 2); 
-  const q1 = getInterpolatedValue(totalN / 4); const q3 = getInterpolatedValue((3 * totalN) / 4);
-  const p10 = getInterpolatedValue(10 * totalN / 100); const p90 = getInterpolatedValue(90 * totalN / 100);
-  const percentileKurtosis = (0.5 * (q3 - q1)) / (p90 - p10);
-
-  let mode = 0;
-  if (modeIdx !== -1) {
-    const d1 = data[modeIdx].f - (modeIdx > 0 ? data[modeIdx - 1].f : 0); 
-    const d2 = data[modeIdx].f - (modeIdx < data.length - 1 ? data[modeIdx + 1].f : 0);
-    const lowerBoundary = data[modeIdx].lower - 0.5;
-    mode = lowerBoundary + p * (d1 / (d1 + d2));
-  }
-  
-  const rawDataArray: number[] = []; data.forEach(d => { for(let i=0; i<d.f; i++) rawDataArray.push(d.mid); });
-  const min = Math.min(...rawDataArray); const max = Math.max(...rawDataArray); const iqr = q3 - q1;
-  
-  // Histogram Logic
-  const generateHistogram = () => { 
-    const bins = data.map(d => ({ label: d.mid.toString(), count: d.f }));
-    return { bins, min: data[0]?.lower || 0, max: data[data.length-1]?.upper || 0, binWidth: p }; 
-  };
-  const histogram = generateHistogram(); 
-  
-  return { 
-    mean, median, mode, stdDev: stdDevPop, variance: m2, min, max, range: max - min, 
-    q1, q3, iqr, p10, p90, percentileKurtosis: isNaN(percentileKurtosis) ? 0 : percentileKurtosis, 
-    alpha3: isNaN(alpha3) ? 0 : alpha3, alpha4: isNaN(alpha4) ? 0 : alpha4,
-    moments: { m1, m2, m3, m4 }, 
-    lowerBound: q1 - 1.5*iqr, upperBound: q3 + 1.5*iqr, outliers: [], 
-    skewness: alpha3, kurtosis: alpha4, 
-    histogram, rawDataArray, detailedTable, tableTotals: T,
-    inputMode: 'interval', codingP: p, assumedMean
-  };
-};
-
-// --- B. DATA TUNGGAL (SIMPANGAN LANGSUNG) ---
-const calculateSingleStats = (dataArray: number[], numBins: number): StatsResult => {
-  const totalN = dataArray.length;
-  const sumX = dataArray.reduce((a, b) => a + b, 0);
-  const mean = sumX / totalN;
-
-  // 1. Momen Langsung
-  let sumDiff2 = 0, sumDiff3 = 0, sumDiff4 = 0;
-  dataArray.forEach(val => {
-      const diff = val - mean;
-      sumDiff2 += Math.pow(diff, 2);
-      sumDiff3 += Math.pow(diff, 3);
-      sumDiff4 += Math.pow(diff, 4);
-  });
-
-  const m2 = sumDiff2 / totalN; 
-  const m3 = sumDiff3 / totalN; 
-  const m4 = sumDiff4 / totalN;
-  
-  const s_pop = Math.sqrt(m2);
-  const alpha3 = m3 / Math.pow(s_pop, 3);
-  const alpha4 = m4 / Math.pow(s_pop, 4);
-
-  // 2. Tabel Rincian
-  const freqMap: Record<number, number> = {};
-  dataArray.forEach(val => { freqMap[val] = (freqMap[val] || 0) + 1; });
-  const uniqueValues = Object.keys(freqMap).map(Number).sort((a, b) => a - b);
-
-  let currentFk = 0;
-  const detailedTable: DetailedRow[] = uniqueValues.map((val) => {
-    const f = freqMap[val];
-    currentFk += f;
-    const d = val - mean; 
-    const u = round(d); const u2 = round(d*d); const u3 = round(d*d*d); const u4 = round(d*d*d*d);
-    return {
-      interval: val.toString(), mid: val, freq: f, fx: val * f, fk: currentFk,
+      interval: d.intervalString, mid: d.mid, 
+      f: d.f, freq: d.f, 
       u, u2, u3, u4,
-      fu: round(f*d), fu2: round(f*u2), fu3: round(f*u3), fu4: round(f*u4)
+      fu: d.f * u, fu2: d.f * u2, fu3: d.f * u3, fu4: d.f * u4,
+      fk: currentFk,
+      absDev: 0, fAbsDev: 0 
     };
   });
 
-  const T = detailedTable.reduce((acc, cur) => ({
-    freq: acc.freq + cur.freq, fx: acc.fx + cur.fx,
-    fu: round(acc.fu + cur.fu), fu2: round(acc.fu2 + cur.fu2), fu3: round(acc.fu3 + cur.fu3), fu4: round(acc.fu4 + cur.fu4)
-  }), { freq: 0, fx: 0, fu: 0, fu2: 0, fu3: 0, fu4: 0 });
+  // Calculate Sums explicitly to avoid spread type issues
+  const sumFu = tempTable.reduce((acc, cur) => acc + cur.fu, 0);
+  const sumFu2 = tempTable.reduce((acc, cur) => acc + cur.fu2, 0);
+  const sumFu3 = tempTable.reduce((acc, cur) => acc + cur.fu3, 0);
+  const sumFu4 = tempTable.reduce((acc, cur) => acc + cur.fu4, 0);
 
-  // Stats Lain
-  const getMedian = (d: number[]) => { const s = [...d].sort((a,b)=>a-b); const mid=Math.floor(s.length/2); return s.length%2!==0 ? s[mid] : (s[mid-1]+s[mid])/2; };
-  const getPercentile = (d: number[], p: number) => { const s = [...d].sort((a,b)=>a-b); const pos = (p/100)*(s.length+1); const base=Math.floor(pos)-1; const rest=pos-Math.floor(pos); if(base<0) return s[0]; if(base>=s.length-1) return s[s.length-1]; return s[base] + rest*(s[base+1]-s[base]); };
+  // 3. Momen & Mean
+  const mu1_u = sumFu / n;
+  const mu2_u = sumFu2 / n;
+  const mu3_u = sumFu3 / n;
+  const mu4_u = sumFu4 / n;
+
+  const mean = assumedMean + (p * mu1_u);
   
-  const median = getMedian(dataArray); 
-  const min = Math.min(...dataArray); const max = Math.max(...dataArray);
-  const q1 = getPercentile(dataArray, 25); const q3 = getPercentile(dataArray, 75); 
-  const p10 = getPercentile(dataArray, 10); const p90 = getPercentile(dataArray, 90); 
-  const iqr = q3 - q1; 
-  const percentileKurtosis = (0.5 * (q3 - q1)) / (p90 - p10);
-  
-  const generateHistogram = () => {
-      const bins = uniqueValues.map(val => ({ label: val.toString(), count: freqMap[val] }));
-      let totalGap = 1;
-      if (uniqueValues.length > 1) { for(let i=0; i<uniqueValues.length-1; i++) totalGap += (uniqueValues[i+1] - uniqueValues[i]); totalGap /= (uniqueValues.length - 1); }
-      return { bins, min, max, binWidth: totalGap };
+  const m2_x = Math.pow(p, 2) * (mu2_u - Math.pow(mu1_u, 2));
+  const m3_x = Math.pow(p, 3) * (mu3_u - 3 * mu1_u * mu2_u + 2 * Math.pow(mu1_u, 3));
+  const m4_x = Math.pow(p, 4) * (mu4_u - 4 * mu1_u * mu3_u + 6 * Math.pow(mu1_u, 2) * mu2_u - 3 * Math.pow(mu1_u, 4));
+
+  const variance = m2_x;
+  const stdDev = Math.sqrt(variance);
+  const gamma1 = m3_x / Math.pow(stdDev, 3); 
+  const gamma2 = m4_x / Math.pow(stdDev, 4); 
+
+  // 4. Interpolasi Posisi
+  const getInterpolation = (target: number) => {
+     let idx = 0;
+     for(let i=0; i<tempTable.length; i++) { if (tempTable[i].fk >= target) { idx = i; break; } }
+     const row = data[idx];
+     const L = row ? row.lower - 0.5 : 0;
+     const Fk = idx > 0 ? tempTable[idx - 1].fk : 0;
+     const f = tempTable[idx]?.f || 1;
+     const res = L + p * ((target - Fk) / f);
+     return { res, L, Fk, f };
   };
-  const histogram = generateHistogram();
-  const modeArr = Object.keys(freqMap).filter(k => freqMap[parseFloat(k)] === Math.max(...Object.values(freqMap))).map(Number);
 
-  const lowerBound = q1 - 1.5 * iqr;
-  const upperBound = q3 + 1.5 * iqr;
-  const outliers = dataArray.filter(val => val < lowerBound || val > upperBound);
+  const medData = getInterpolation(n / 2);
+  const q1Data = getInterpolation(n / 4);
+  const q3Data = getInterpolation(3 * n / 4);
+  const p10 = getInterpolation(10 * n / 100).res;
+  const p90 = getInterpolation(90 * n / 100).res;
 
-  return { 
-    mean, median, mode: modeArr, stdDev: s_pop, variance: m2, min, max, range: max - min, 
-    q1, q3, iqr, p10, p90, percentileKurtosis: isNaN(percentileKurtosis) ? 0 : percentileKurtosis, 
-    alpha3: isNaN(alpha3) ? 0 : alpha3, alpha4: isNaN(alpha4) ? 0 : alpha4,
-    moments: { m1: 0, m2, m3, m4 }, 
-    lowerBound: 0, upperBound: 0, outliers: [...new Set(outliers)], 
-    skewness: alpha3, kurtosis: alpha4, 
-    histogram, rawDataArray: dataArray, detailedTable, tableTotals: T,
-    inputMode: 'single'
+  // 5. Modus
+  const d1 = data[modeIdx].f - (modeIdx > 0 ? data[modeIdx - 1].f : 0);
+  const d2 = data[modeIdx].f - (modeIdx < data.length - 1 ? data[modeIdx + 1].f : 0);
+  const modeL = data[modeIdx].lower - 0.5;
+  const mode = modeL + p * (d1 / (d1 + d2));
+
+  // 6. Ukuran Lain
+  const sk1 = (mean - mode) / stdDev;
+  const sk2 = (3 * (mean - medData.res)) / stdDev;
+  const sk4 = (q3Data.res + q1Data.res - 2 * medData.res) / (q3Data.res - q1Data.res); 
+  const sk5 = (p90 + p10 - 2 * medData.res) / (p90 - p10); 
+
+  // 7. Simpangan Rata-rata (Finalisasi Tabel)
+  const detailedTable = tempTable.map(row => {
+    const absDev = Math.abs(row.mid - mean);
+    const fAbsDev = row.f * absDev;
+    return { ...row, absDev, fAbsDev };
+  });
+  
+  const sumFAbsDev = detailedTable.reduce((acc, cur) => acc + cur.fAbsDev, 0);
+  const meanDeviation = sumFAbsDev / n;
+  const coeffVariation = (stdDev / mean) * 100;
+
+  const rawDataArray: number[] = []; 
+  data.forEach(d => { for(let i=0; i<d.f; i++) rawDataArray.push(d.mid); });
+  const min = Math.min(...rawDataArray); const max = Math.max(...rawDataArray);
+  const bins = data.map(d => ({ label: d.mid.toString(), count: d.f }));
+
+  return {
+    mean, median: medData.res, mode, stdDev, variance, meanDeviation, coeffVariation,
+    sk1, sk2, gamma1, gamma2, sk4, sk5,
+    q1: q1Data.res, q3: q3Data.res, p10, p90,
+    min, max, range: max - min,
+    histogram: { bins, min: data[0]?.lower || 0, max: data[data.length-1]?.upper || 0, binWidth: p },
+    rawDataArray, detailedTable,
+    // Fix: Explicitly construct the object to match Interface
+    tableTotals: { 
+      freq: n, 
+      fu: sumFu, 
+      fu2: sumFu2, 
+      fu3: sumFu3, 
+      fu4: sumFu4, 
+      fAbsDev: sumFAbsDev 
+    },
+    codingP: p, assumedMean,
+    mu1_u, mu2_u, mu3_u, mu4_u,
+    m2_x, m3_x, m4_x,
+    medL: medData.L, medFk: medData.Fk, medF: medData.f,
+    q1L: q1Data.L, q1Fk: q1Data.Fk, q1F: q1Data.f,
+    q3L: q3Data.L, q3Fk: q3Data.Fk, q3F: q3Data.f,
+    modeL, modeD1: d1, modeD2: d2
   };
 };
 
 // ==========================================
-// 3. UI REACT
+// 2B. LOGIKA DATA TUNGGAL (EXACT / DISKRET)
+// ==========================================
+const calculateSingleStats = (rows: DataRow[]): StatsResult => {
+  // 1. Parsing
+  const data = rows.map(r => {
+    const f = parseInt(r.f) || 0; 
+    const val = parseFloat(r.x.replace(/,/g, '.'));
+    return { lower: val, upper: val, mid: val, f, intervalString: val.toString() };
+  }).filter(d => !isNaN(d.mid) && d.f > 0);
+
+  const n = data.reduce((acc, cur) => acc + cur.f, 0);
+  const p = 1;
+
+  // 2. Coding (u)
+  let maxFreq = -1; let modeIdx = -1;
+  data.forEach((d, i) => { if (d.f > maxFreq) { maxFreq = d.f; modeIdx = i; } });
+  const assumedMean = data[modeIdx]?.mid || 0; 
+
+  let currentFk = 0;
+  // Explicit Type: DetailedRow[]
+  const tempTable: DetailedRow[] = data.map((d, i) => {
+    const u = i - modeIdx; 
+    currentFk += d.f;
+    const u2 = u*u; const u3 = u*u*u; const u4 = u*u*u*u;
+    return { 
+      interval: d.intervalString, mid: d.mid, freq: d.f, f: d.f, 
+      u, u2, u3, u4,
+      fu: d.f * u, fu2: d.f * u2, fu3: d.f * u3, fu4: d.f * u4,
+      fk: currentFk,
+      absDev: 0, fAbsDev: 0
+    };
+  });
+
+  const sumFu = tempTable.reduce((acc, cur) => acc + cur.fu, 0);
+  const sumFu2 = tempTable.reduce((acc, cur) => acc + cur.fu2, 0);
+  const sumFu3 = tempTable.reduce((acc, cur) => acc + cur.fu3, 0);
+  const sumFu4 = tempTable.reduce((acc, cur) => acc + cur.fu4, 0);
+
+  // 3. Momen & Mean
+  const mu1_u = sumFu / n;
+  const mu2_u = sumFu2 / n;
+  const mu3_u = sumFu3 / n;
+  const mu4_u = sumFu4 / n;
+
+  const mean = assumedMean + (p * mu1_u);
+  
+  // Transformasi Momen
+  const m2_x = (mu2_u - Math.pow(mu1_u, 2));
+  const m3_x = (mu3_u - 3 * mu1_u * mu2_u + 2 * Math.pow(mu1_u, 3));
+  const m4_x = (mu4_u - 4 * mu1_u * mu3_u + 6 * Math.pow(mu1_u, 2) * mu2_u - 3 * Math.pow(mu1_u, 4));
+
+  const variance = m2_x;
+  const stdDev = Math.sqrt(variance);
+  const gamma1 = m3_x / Math.pow(stdDev, 3); 
+  const gamma2 = m4_x / Math.pow(stdDev, 4); 
+
+  // 4. Posisi (Exact)
+  const getValueAtPos = (pos: number) => {
+      for(let r of tempTable) { if(r.fk >= pos) return r.mid; }
+      return 0;
+  };
+
+  let median = 0;
+  if (n % 2 === 1) median = getValueAtPos((n + 1) / 2);
+  else median = (getValueAtPos(n/2) + getValueAtPos((n/2)+1)) / 2;
+
+  const q1 = getValueAtPos(Math.ceil(n * 0.25));
+  const q3 = getValueAtPos(Math.ceil(n * 0.75));
+  const p10 = getValueAtPos(Math.ceil(n * 0.10));
+  const p90 = getValueAtPos(Math.ceil(n * 0.90));
+
+  // 5. Modus
+  const mode = data[modeIdx].mid;
+
+  // 6. Ukuran Lain
+  const sk1 = (mean - mode) / stdDev;
+  const sk2 = (3 * (mean - median)) / stdDev;
+  const sk4 = (q3 + q1 - 2 * median) / (q3 - q1); 
+  const sk5 = (p90 + p10 - 2 * median) / (p90 - p10); 
+
+  // 7. Simpangan Rata-rata
+  const detailedTable = tempTable.map(row => {
+    const absDev = Math.abs(row.mid - mean);
+    const fAbsDev = row.f * absDev;
+    return { ...row, absDev, fAbsDev };
+  });
+  const sumFAbsDev = detailedTable.reduce((acc, cur) => acc + cur.fAbsDev, 0);
+  const meanDeviation = sumFAbsDev / n;
+  const coeffVariation = (stdDev / mean) * 100;
+
+  const rawDataArray: number[] = []; 
+  data.forEach(d => { for(let i=0; i<d.f; i++) rawDataArray.push(d.mid); });
+  const min = Math.min(...rawDataArray); const max = Math.max(...rawDataArray);
+  const bins = data.map(d => ({ label: d.mid.toString(), count: d.f }));
+
+  return {
+    mean, median, mode, stdDev, variance, meanDeviation, coeffVariation,
+    sk1, sk2, gamma1, gamma2, sk4, sk5,
+    q1, q3, p10, p90,
+    min, max, range: max - min,
+    histogram: { bins, min: data[0]?.lower || 0, max: data[data.length-1]?.upper || 0, binWidth: 1 },
+    rawDataArray, detailedTable,
+    tableTotals: { 
+      freq: n, 
+      fu: sumFu, 
+      fu2: sumFu2, 
+      fu3: sumFu3, 
+      fu4: sumFu4, 
+      fAbsDev: sumFAbsDev 
+    },
+    codingP: 1, assumedMean,
+    mu1_u, mu2_u, mu3_u, mu4_u,
+    m2_x, m3_x, m4_x,
+    medL: 0, medFk: 0, medF: 0,
+    q1L: 0, q1Fk: 0, q1F: 0,
+    q3L: 0, q3Fk: 0, q3F: 0,
+    modeL: 0, modeD1: 0, modeD2: 0
+  };
+};
+
+// ==========================================
+// 3. UI LAYOUT
 // ==========================================
 
 const Home: React.FC = () => {
-  const [inputMode, setInputMode] = useState<InputMode>('interval'); 
-  const [rows, setRows] = useState<DataRow[]>([{ id: 1, x: '10-19', f: '4' }]);
+  const [inputMode, setInputMode] = useState<InputMode>('interval');
+  const [rows, setRows] = useState<DataRow[]>([
+    { id: 1, x: '31-40', f: '4' }, { id: 2, x: '41-50', f: '3' }, { id: 3, x: '51-60', f: '5' },
+    { id: 4, x: '61-70', f: '8' }, { id: 5, x: '71-80', f: '11' }, { id: 6, x: '81-90', f: '7' }, { id: 7, x: '91-100', f: '2' },
+  ]);
   const [results, setResults] = useState<StatsResult | null>(null);
   const [error, setError] = useState<string>('');
-  const [numBins, setNumBins] = useState<number>(10);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const printRef = useRef<HTMLDivElement>(null);
 
   const handlePrint = useReactToPrint({ contentRef: printRef, documentTitle: `Laporan_Statistik` });
 
-  useEffect(() => { if(inputMode === 'single') loadExample('normal'); else loadExample('normal'); }, [inputMode]);
+  useEffect(() => {
+     if (inputMode === 'interval') {
+        setRows([
+           { id: 1, x: '31-40', f: '4' }, { id: 2, x: '41-50', f: '3' }, { id: 3, x: '51-60', f: '5' },
+           { id: 4, x: '61-70', f: '8' }, { id: 5, x: '71-80', f: '11' }, { id: 6, x: '81-90', f: '7' }, { id: 7, x: '91-100', f: '2' },
+        ]);
+     } else {
+        setRows([
+           { id: 1, x: '60', f: '2' }, { id: 2, x: '65', f: '5' }, { id: 3, x: '70', f: '10' },
+           { id: 4, x: '75', f: '8' }, { id: 5, x: '80', f: '4' },
+        ]);
+     }
+     setResults(null); 
+  }, [inputMode]);
 
-  const loadExample = (type: 'normal' | 'skewed') => {
-    if (inputMode === 'single') setRows([{ id: 1, x: '60', f: '3' }, { id: 2, x: '70', f: '8' }, { id: 3, x: '80', f: '12' }, { id: 4, x: '90', f: '6' }, { id: 5, x: '100', f: '2' }]);
-    else setRows([ { id: 1, x: '60-62', f: '5' }, { id: 2, x: '63-65', f: '18' }, { id: 3, x: '66-68', f: '42' }, { id: 4, x: '69-71', f: '27' }, { id: 5, x: '72-74', f: '8' } ]);
-  };
-
-  const handleCalculate = (e: React.FormEvent) => {
-    e.preventDefault(); setError(''); setResults(null);
-    try {
-      if (inputMode === 'interval') setResults(calculateGroupedStats(rows));
-      else {
-        const expandedData: number[] = [];
-        rows.forEach(row => { const val = parseFloat(row.x.replace(/,/g, '.')); const freq = parseInt(row.f); if (!isNaN(val) && !isNaN(freq) && freq > 0) for (let i = 0; i < freq; i++) expandedData.push(val); });
-        if (expandedData.length === 0) throw new Error("Data kosong");
-        setResults(calculateSingleStats(expandedData, numBins));
-      }
-    } catch (err: any) { console.error(err); setError('Cek input data Anda.'); }
+  const handleCalculate = (e?: React.FormEvent) => {
+    if(e) e.preventDefault();
+    setError(''); setResults(null);
+    try { 
+        if (inputMode === 'single') {
+            setResults(calculateSingleStats(rows)); 
+        } else {
+            setResults(calculateGroupedStats(rows));
+        }
+    } catch (err: any) { console.error(err); setError('Cek data input.'); }
   };
 
   const addRow = () => setRows([...rows, { id: Date.now(), x: '', f: '1' }]);
   const removeRow = (id: number) => { if (rows.length > 1) setRows(rows.filter(r => r.id !== id)); };
   const updateRow = (id: number, field: 'x' | 'f', value: string) => setRows(rows.map(r => r.id === id ? { ...r, [field]: value } : r));
-  const handleDownloadTemplate = () => { /*...*/ };
-  const handleFileUpload = (e: any) => { /*...*/ };
 
   const SummaryCard = ({ title, value, icon, color, sub }: any) => (
-    <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex justify-between items-center">
+    <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex justify-between items-center transition-all hover:shadow-md">
       <div>
-          <p className="text-[10px] font-bold text-slate-400 uppercase">{title}</p>
-          <p className="text-xl font-bold text-slate-800">{value}</p>
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">{title}</p>
+          <p className="text-xl font-bold text-slate-800 mt-1">{value}</p>
           {sub && <p className="text-[10px] text-slate-400 mt-1">{sub}</p>}
       </div>
       <div className={`p-2 rounded-lg ${color} bg-opacity-10 text-lg`}>{icon}</div>
@@ -285,94 +391,104 @@ const Home: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans text-sm">
-      <header className="bg-white border-b border-slate-200 px-4 h-14 flex items-center justify-between shadow-sm sticky top-0 z-50 print:hidden">
-        <div className="flex items-center gap-2"><div className="bg-indigo-600 text-white p-1 rounded text-sm">📊</div><h1 className="font-bold text-lg">Statistik<span className="text-indigo-600">Pro</span></h1></div>
-        <div className="flex bg-slate-100 p-1 rounded-md">
-           <button onClick={() => setInputMode('single')} className={`px-3 py-1 text-xs font-bold rounded ${inputMode==='single'?'bg-white shadow text-indigo-600':'text-slate-500'}`}>Tunggal</button>
-           <button onClick={() => setInputMode('interval')} className={`px-3 py-1 text-xs font-bold rounded ${inputMode==='interval'?'bg-white shadow text-indigo-600':'text-slate-500'}`}>Interval</button>
+      
+      {/* HEADER UTAMA */}
+      <header className="bg-white border-b border-slate-200 px-6 h-16 flex items-center justify-between shadow-sm sticky top-0 z-50 print:hidden">
+        <div className="flex items-center gap-3">
+          {/* LOGO IMAGE */}
+          <div className="relative w-8 h-8 flex-shrink-0">
+             <Image 
+                src={iconSrc} 
+                alt="StatistikPro Logo" 
+                fill
+                sizes="32px"
+                className="object-contain drop-shadow-sm"
+                priority
+             />
+          </div>
+          <h1 className="font-bold text-xl tracking-tight text-slate-800">
+            Statistik<span className="text-indigo-600">Pro</span>
+          </h1>
+        </div>
+        <div className="flex bg-slate-100 p-1 rounded-lg">
+           <button onClick={() => setInputMode('single')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${inputMode === 'single' ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}>Data Tunggal</button>
+           <button onClick={() => setInputMode('interval')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${inputMode === 'interval' ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}>Data Kelompok</button>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* INPUT SIDEBAR */}
+      <main className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+          {/* SIDEBAR INPUT */}
           <div className="lg:col-span-4 xl:col-span-3 space-y-4 print:hidden">
-            <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden sticky top-20">
-              <div className="p-3 border-b bg-slate-50 flex justify-between items-center"><h2 className="font-bold text-xs text-slate-700">INPUT DATA</h2><button onClick={()=>setRows([{id:Date.now(),x:'',f:'1'}])} className="text-[10px] text-red-500 font-bold">RESET</button></div>
-              <div className="grid grid-cols-2 gap-2 px-3 pt-3">
-                 <button onClick={handleDownloadTemplate} className="py-1.5 border rounded text-[10px] font-bold text-slate-500 hover:bg-slate-50">TEMPLATE</button>
-                 <div className="relative"><input type="file" accept=".csv" ref={fileInputRef} onChange={handleFileUpload} className="absolute inset-0 opacity-0 cursor-pointer"/><button className="w-full py-1.5 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold">UPLOAD CSV</button></div>
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden sticky top-24">
+              <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
+                <h2 className="font-bold text-sm text-slate-700">INPUT DATA ({inputMode === 'single' ? 'Tunggal' : 'Kelompok'})</h2>
+                <button onClick={() => setRows([{id:Date.now(),x:'',f:'1'}])} className="text-[10px] text-red-500 font-bold hover:bg-red-50 px-2 py-1 rounded">RESET</button>
               </div>
-              <div className="grid grid-cols-12 gap-2 px-3 mt-3 mb-1 text-[9px] font-bold text-slate-400 uppercase tracking-widest"><div className="col-span-7">Nilai / Interval</div><div className="col-span-3 text-center">Freq</div><div className="col-span-2 text-center">Del</div></div>
-              <div className="px-3 pb-2 space-y-2 max-h-[40vh] overflow-y-auto custom-scrollbar">
-                {rows.map((r) => (
-                   <div key={r.id} className="grid grid-cols-12 gap-2 items-center">
-                      <div className="col-span-7"><input value={r.x} onChange={e=>updateRow(r.id,'x',e.target.value)} className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded text-xs font-medium outline-none focus:bg-white focus:border-indigo-500 transition-all" placeholder={inputMode==='single'?'75':'60-62'} /></div>
-                      <div className="col-span-3"><input type="number" value={r.f} onChange={e=>updateRow(r.id,'f',e.target.value)} className="w-full px-1 py-1.5 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-center outline-none focus:bg-white focus:border-indigo-500 transition-all" /></div>
-                      <div className="col-span-2 flex justify-center"><button onClick={()=>removeRow(r.id)} className="text-slate-300 hover:text-red-500 text-xs">✖</button></div>
-                   </div>
-                ))}
+              <div className="px-4 pt-4 pb-2">
+                 <div className="grid grid-cols-12 gap-2 mb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    <div className="col-span-7">{inputMode === 'single' ? 'Nilai (x)' : 'Interval'}</div>
+                    <div className="col-span-3 text-center">Freq</div>
+                    <div className="col-span-2 text-center">Aksi</div>
+                 </div>
+                 <div className="space-y-2 max-h-[50vh] overflow-y-auto custom-scrollbar pr-1">
+                   {rows.map((r) => (
+                      <div key={r.id} className="grid grid-cols-12 gap-2 items-center group">
+                         <div className="col-span-7"><input value={r.x} onChange={e=>updateRow(r.id,'x',e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-medium focus:bg-white focus:border-indigo-500 outline-none transition-all" placeholder={inputMode === 'single' ? "75" : "31-40"} /></div>
+                         <div className="col-span-3"><input type="number" value={r.f} onChange={e=>updateRow(r.id,'f',e.target.value)} className="w-full px-1 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-center focus:bg-white focus:border-indigo-500 outline-none transition-all" /></div>
+                         <div className="col-span-2 flex justify-center"><button onClick={()=>removeRow(r.id)} className="text-slate-300 hover:text-red-500 text-lg transition-colors leading-none">&times;</button></div>
+                      </div>
+                   ))}
+                 </div>
               </div>
-              <div className="p-3 border-t border-slate-100 space-y-2">
-                 <button onClick={addRow} className="w-full py-2 border-2 border-dashed rounded text-[10px] font-bold text-slate-400 hover:text-indigo-600 hover:border-indigo-300">+ TAMBAH BARIS</button>
-                 {error && <div className="text-[10px] text-red-600 bg-red-50 p-1.5 rounded border border-red-100 text-center">⚠️ {error}</div>}
-                 <button onClick={handleCalculate} className="w-full py-2.5 bg-indigo-600 text-white rounded-lg text-xs font-bold shadow hover:bg-indigo-700 transition-all">HITUNG STATISTIK</button>
-                 <button onClick={()=>loadExample('normal')} className="w-full text-center text-[9px] font-bold text-indigo-400 hover:text-indigo-600 uppercase tracking-wide">Muat Contoh Data</button>
+              <div className="p-4 border-t border-slate-100 space-y-3 bg-white">
+                 <button onClick={addRow} className="w-full py-2.5 border-2 border-dashed border-slate-200 rounded-lg text-xs font-bold text-slate-400 hover:text-indigo-600 hover:border-indigo-400 transition-all">+ TAMBAH BARIS</button>
+                 {error && <div className="text-[10px] text-red-600 bg-red-50 p-2 rounded border border-red-100 text-center">⚠️ {error}</div>}
+                 <button onClick={handleCalculate} className="w-full py-3 bg-indigo-600 text-white rounded-lg text-sm font-bold shadow-md hover:bg-indigo-700 hover:shadow-lg transition-all transform active:scale-95">HITUNG STATISTIK 🚀</button>
               </div>
             </div>
           </div>
 
-          {/* RESULTS CONTENT */}
-          <div className="lg:col-span-8 xl:col-span-9 space-y-4 print:col-span-12 print:w-full">
+          {/* MAIN CONTENT RESULT */}
+          <div className="lg:col-span-8 xl:col-span-9 space-y-6 print:col-span-12 print:w-full">
              {results ? (
-                <div className="animate-fade-in space-y-4">
-                   <div className="flex justify-between items-center bg-white p-4 rounded-lg shadow-sm border border-slate-200 print:hidden">
-                      <h2 className="font-bold text-slate-700 text-base flex items-center gap-2"><span>📊</span> Hasil Analisis</h2>
-                      <button onClick={() => handlePrint()} className="flex items-center gap-2 bg-red-50 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-xs font-bold hover:bg-red-100 transition-all"><span>📄</span> Download PDF</button>
+                <div className="animate-fade-in space-y-6">
+                   <div className="flex justify-between items-center bg-white p-5 rounded-xl shadow-sm border border-slate-200 print:hidden">
+                      <div><h2 className="font-bold text-slate-800 text-lg">Hasil Analisis Data</h2><p className="text-xs text-slate-500 mt-1">Menggunakan metode Coding & Momen (Step 1-10)</p></div>
+                      <button onClick={() => handlePrint()} className="flex items-center gap-2 bg-slate-800 text-white border border-slate-800 px-5 py-2.5 rounded-lg text-xs font-bold hover:bg-slate-700 hover:shadow-lg transition-all"><span>🖨️</span> Cetak Laporan</button>
                    </div>
-
-                   <div ref={printRef} className="space-y-4 p-2 print:p-6 print:bg-white">
-                      <div className="hidden print:block mb-6 border-b pb-4"><h1 className="text-2xl font-bold text-slate-800">Laporan Statistik</h1><p className="text-sm text-slate-500">{new Date().toLocaleDateString()}</p></div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                          <SummaryCard title="Mean" value={(results.mean ?? 0).toFixed(2)} icon="🎯" color="text-blue-600" />
-                          <SummaryCard title="Median" value={(results.median ?? 0).toFixed(2)} icon="⚖️" color="text-purple-600" />
-                          <SummaryCard 
-                            title="Koef. Kurtosis (α4)" 
-                            value={(results.alpha4 ?? 0).toFixed(4)} 
-                            sub={`K (Persentil): ${(results.percentileKurtosis ?? 0).toFixed(4)}`} 
-                            icon="🏔️" color="text-pink-600" 
-                          />
+                   <div ref={printRef} className="space-y-6 print:p-8 print:bg-white">
+                      <div className="hidden print:block mb-8 border-b pb-4"><h1 className="text-3xl font-bold text-slate-800">Laporan Statistik</h1><p className="text-sm text-slate-500 mt-2">Dibuat otomatis oleh StatistikPro</p></div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 print:grid-cols-4">
+                          <SummaryCard title="Rata-rata (Mean)" value={(results.mean ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 2 })} icon="🎯" color="text-blue-600 bg-blue-500" />
+                          <SummaryCard title="Modus" value={Array.isArray(results.mode) ? results.mode.join(', ') : (results.mode ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 2 })} icon="👑" color="text-purple-600 bg-purple-500" />
+                          <SummaryCard title="Simpangan Baku" value={(results.stdDev ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 2 })} icon="📉" color="text-emerald-600 bg-emerald-500" />
+                          <SummaryCard title="Skewness (Momen)" value={(results.gamma1 ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 3 })} sub={`Kurtosis: ${results.gamma2.toFixed(3)}`} icon="📐" color="text-amber-600 bg-amber-500" />
                       </div>
-
-                      {/* CHART VISUALISASI */}
-                      <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
-                          <div className="bg-slate-50/50 px-4 py-2 border-b border-slate-100"><h3 className="font-bold text-xs text-slate-700">VISUALISASI</h3></div>
-                          <div className="p-4 h-[500px] relative"><StatsChart stats={results} histogram={results.histogram} rawData={results.rawDataArray} /></div>
+                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
+                          <div className="bg-slate-50/80 px-5 py-3 border-b border-slate-100 flex justify-between items-center"><h3 className="font-bold text-xs text-slate-700 uppercase tracking-wider">Visualisasi</h3></div>
+                          <div className="p-5 h-[350px] relative"><StatsChart stats={results} histogram={results.histogram} rawData={results.rawDataArray} /></div>
                       </div>
-
-                      {/* TABEL STATISTIK */}
-                      <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
-                          <div className="bg-slate-50/50 px-4 py-2 border-b border-slate-100"><h3 className="font-bold text-xs text-slate-700">TABEL STATISTIK</h3></div>
-                          <div className="p-4"><StatsTable stats={results} rawDataArray={results.rawDataArray} /></div>
+                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
+                          <div className="bg-slate-50/80 px-5 py-3 border-b border-slate-100"><h3 className="font-bold text-xs text-slate-700 uppercase tracking-wider">Analisis Bentuk Kurva</h3></div>
+                          <div className="p-5"><Interpretation skewness={results.gamma1} kurtosis={results.gamma2} /></div>
                       </div>
-
-                      {/* STEP BY STEP REPORT (BARU) */}
-                      <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
-                          <div className="bg-slate-50/50 px-4 py-2 border-b border-slate-100"><h3 className="font-bold text-xs text-slate-700">LANGKAH PENGERJAAN</h3></div>
-                          <div className="p-4"><AnalysisReport stats={results} /></div>
+                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
+                          <div className="bg-slate-50/80 px-5 py-3 border-b border-slate-100"><h3 className="font-bold text-xs text-slate-700 uppercase tracking-wider">Tabel Distribusi & Statistik Detail</h3></div>
+                          <div className="p-5"><StatsTable stats={results} /></div>
                       </div>
-
-                      {/* INTERPRETASI */}
-                      <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
-                          <div className="bg-slate-50/50 px-4 py-2 border-b border-slate-100"><h3 className="font-bold text-xs text-slate-700">ANALISIS BENTUK</h3></div>
-                          <div className="p-4"><Interpretation skewness={results.alpha3} kurtosis={results.alpha4} /></div>
+                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:break-inside-avoid">
+                          <div className="bg-indigo-50/80 px-5 py-3 border-b border-indigo-100"><h3 className="font-bold text-xs text-indigo-800 uppercase tracking-wider flex items-center gap-2"><span>📝</span> PROCESS (Langkah Pengerjaan 1-10)</h3></div>
+                          <div className="p-5"><AnalysisReport stats={results} /></div>
                       </div>
-                      
-                      <div className="hidden print:block mt-8 text-center text-[10px] text-slate-400 border-t pt-4">Dicetak dari Aplikasi StatistikPro</div>
+                      <div className="hidden print:block mt-8 text-center text-[10px] text-slate-400 border-t pt-4">Dicetak dari Aplikasi StatistikPro • {new Date().getFullYear()}</div>
                    </div>
                 </div>
              ) : (
-                <div className="h-80 flex flex-col items-center justify-center border-2 border-dashed border-slate-300 rounded-lg bg-slate-50 text-slate-400"><span className="text-3xl mb-2">👋</span><p className="text-xs font-medium">Siap menganalisis data.</p></div>
+                <div className="h-[60vh] flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50 text-slate-400">
+                   <div className="bg-white p-4 rounded-full shadow-sm mb-4 text-4xl">👋</div>
+                   <h3 className="font-bold text-slate-600 text-lg">Siap Menganalisis</h3>
+                   <p className="text-xs font-medium max-w-xs text-center mt-2 leading-relaxed">Pilih Mode Data (Tunggal/Kelompok), masukkan data, lalu klik Hitung.</p>
+                </div>
              )}
           </div>
       </main>

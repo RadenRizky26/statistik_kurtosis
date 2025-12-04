@@ -12,8 +12,8 @@ import {
   Tooltip,
   Legend,
   Filler,
-  ChartData,    // Import Type
-  ChartOptions  // Import Type
+  ChartData,
+  ChartOptions // Pastikan ini terimport
 } from 'chart.js';
 import { Line, Bar } from 'react-chartjs-2';
 
@@ -38,7 +38,7 @@ interface StatsChartProps { stats: StatsResult; histogram: HistogramResult; rawD
 const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) => {
   const [activeTab, setActiveTab] = useState<'histogram' | 'ogive'>('histogram');
 
-  // 1. SAFETY CHECK (PENTING: Mencegah crash saat loading)
+  // 1. SAFETY CHECK
   if (!histogram || !histogram.bins || !stats || !rawData) {
     return <div className="p-4 text-center text-gray-400 text-sm">Memuat grafik...</div>;
   }
@@ -49,34 +49,25 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
   const binLabels = histogram.bins.map(bin => bin.label);
   const binCounts = histogram.bins.map(bin => bin.count);
 
-  // --- 2. DATA KURVA NORMAL (Untuk Histogram) ---
+  // --- 2. DATA KURVA NORMAL ---
   const normalCurvePoints = histogram.bins.map((bin) => {
       const x_val = parseFloat(bin.label); 
       const effectiveStd = stdDev || 1;
       const exponent = -0.5 * Math.pow((x_val - mean) / effectiveStd, 2);
       const pdf = (1 / (effectiveStd * Math.sqrt(2 * Math.PI))) * Math.exp(exponent);
-      // Scaling agar tingginya sesuai frekuensi histogram
       return pdf * totalData * histogram.binWidth;
   });
 
-  // --- 3. DATA OGIVE (Kumulatif) ---
-  // Ogive Positif (Kumulatif Meningkat)
+  // --- 3. DATA OGIVE ---
   let cumPos = 0;
-  const ogivePositive = binCounts.map(count => {
-    cumPos += count;
-    return cumPos;
-  });
+  const ogivePositive = binCounts.map(count => { cumPos += count; return cumPos; });
 
-  // Ogive Negatif (Kumulatif Menurun)
   let cumNeg = totalData;
-  const ogiveNegative = binCounts.map(count => {
-    const val = cumNeg;
-    cumNeg -= count;
-    return val;
-  });
+  const ogiveNegative = binCounts.map(count => { const val = cumNeg; cumNeg -= count; return val; });
 
-  // --- 4. CONFIG CHART (Type Safe) ---
-  const commonScales: ChartOptions['scales'] = {
+  // --- 4. CONFIG CHART (FIXED TYPE) ---
+  // PERBAIKAN DISINI: Gunakan ChartOptions<'bar'>['scales'] agar tidak dianggap Radial/Radar chart
+  const commonScales: ChartOptions<'bar'>['scales'] = {
     y: { 
       beginAtZero: true, 
       grid: { color: '#f1f5f9' }, 
@@ -90,7 +81,7 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
     }
   };
 
-  // DATA TAB 1: HISTOGRAM (Mixed: Line + Bar)
+  // DATA TAB 1: HISTOGRAM
   const histogramData: ChartData<'bar' | 'line', number[], string> = {
     labels: binLabels,
     datasets: [
@@ -98,7 +89,7 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
         type: 'line' as const,
         label: 'Kurva Normal',
         data: normalCurvePoints,
-        borderColor: '#4f46e5', // Indigo
+        borderColor: '#4f46e5', 
         borderWidth: 2,
         pointRadius: 0,
         tension: 0.4,
@@ -119,14 +110,14 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
     ],
   };
 
-  // DATA TAB 2: OGIVE (Line Only)
+  // DATA TAB 2: OGIVE
   const ogiveData: ChartData<'line', number[], string> = {
     labels: binLabels,
     datasets: [
       {
         label: 'Ogive Positif (≤)',
         data: ogivePositive,
-        borderColor: '#059669', // Emerald Green
+        borderColor: '#059669',
         backgroundColor: 'rgba(16, 185, 129, 0.1)',
         borderWidth: 2,
         pointRadius: 4,
@@ -138,7 +129,7 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
       {
         label: 'Ogive Negatif (≥)',
         data: ogiveNegative,
-        borderColor: '#dc2626', // Red
+        borderColor: '#dc2626',
         backgroundColor: 'rgba(239, 68, 68, 0.1)',
         borderWidth: 2,
         pointRadius: 4,
@@ -152,7 +143,6 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
 
   return (
     <div className="flex flex-col h-full">
-       {/* TAB SWITCHER */}
        <div className="flex gap-2 mb-4 bg-slate-100 p-1.5 rounded-lg w-fit border border-slate-200">
           <button 
             onClick={() => setActiveTab('histogram')} 
@@ -168,11 +158,9 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
           </button>
        </div>
 
-       {/* CHART AREA */}
        <div className="relative w-full h-full min-h-[300px]">
           {activeTab === 'histogram' ? (
              <Bar 
-                // Casting aman: "Data ini adalah campuran Bar & Line, tapi tolong terima di komponen Bar"
                 data={histogramData as ChartData<'bar', number[], string>} 
                 options={{ 
                   responsive: true, 
@@ -195,10 +183,14 @@ const StatsChart: React.FC<StatsChartProps> = ({ stats, histogram, rawData }) =>
                     legend: { position: 'bottom', labels: { font: { size: 11 } } },
                     title: { display: true, text: 'Titik Potong = Letak Median', color: '#94a3b8', font: { weight: 'normal' } } 
                   },
+                  // Kita definisikan ulang scales secara manual agar aman dari error spread operator pada tipe union
                   scales: {
-                    ...commonScales,
-                    y: { ...commonScales.y, title: { display: true, text: 'Frekuensi Kumulatif' } }
-                  } as ChartOptions['scales'] // Casting Type Safe
+                    x: commonScales!.x,
+                    y: {
+                        ...commonScales!.y, // Spread properti Y dari commonScales
+                        title: { display: true, text: 'Frekuensi Kumulatif' } // Override title
+                    } as any // 'as any' kecil di sini diperlukan karena properti scales sangat kompleks di ChartJS
+                  }
                 }} 
              />
           )}
