@@ -22,13 +22,9 @@ export interface DetailedRow {
   // Coding
   u: number; u2: number; u3: number; u4: number; 
   fu: number; fu2: number; fu3: number; fu4: number; 
-  // Manual / Simpangan
-  fx: number;           
-  diff: number;         
-  diffSq: number;       
-  fDiffSq: number;      
-  absDev: number; fAbsDev: number;
-  fk: number;
+  // Manual
+  fx: number; diff: number; diffSq: number; fDiffSq: number;      
+  absDev: number; fAbsDev: number; fk: number;
 }
 
 export interface HistogramResult { 
@@ -41,25 +37,18 @@ interface SumsAccumulator {
 }
 
 export interface TableTotals extends SumsAccumulator {
-  freq: number;
-  f: number;
-  fAbsDev: number;
-  fx: number;
-  fDiffSq: number;
+  freq: number; f: number; fAbsDev: number; fx: number; fDiffSq: number;
 }
 
 export interface StatsResult { 
   mean: number; median: number; mode: number | number[]; 
-  stdDev: number; variance: number; 
-  meanDeviation: number; coeffVariation: number; 
+  stdDev: number; variance: number; meanDeviation: number; coeffVariation: number; 
   sk1: number; sk2: number; gamma1: number; gamma2: number; sk4: number; sk5: number; 
   skewness: number; kurtosis: number;
   q1: number; q3: number; p10: number; p90: number;
   min: number; max: number; range: number; 
   histogram: HistogramResult; 
-  rawDataArray: number[]; 
-  detailedTable: DetailedRow[]; 
-  tableTotals: TableTotals; 
+  rawDataArray: number[]; detailedTable: DetailedRow[]; tableTotals: TableTotals; 
   codingP: number; assumedMean: number;
   mu1_u: number; mu2_u: number; mu3_u: number; mu4_u: number; 
   m2_x: number; m3_x: number; m4_x: number; 
@@ -161,10 +150,12 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
   const detailedTable: DetailedRow[] = tempTablePre.map(row => {
     const absDev = Math.abs(row.mid - mean);
     const fAbsDev = row.f * absDev;
+    
     const fx = row.f * row.mid;
     const diff = row.mid - mean;
     const diffSq = Math.pow(diff, 2);
     const fDiffSq = row.f * diffSq;
+
     return { ...row, absDev, fAbsDev, fx, diff, diffSq, fDiffSq };
   });
   
@@ -187,8 +178,8 @@ const calculateGroupedStats = (rows: DataRow[]): StatsResult => {
   return {
     mean, median: medData.res, mode, stdDev, variance, meanDeviation, coeffVariation,
     sk1, sk2, gamma1, gamma2, sk4, sk5, skewness: gamma1, kurtosis: gamma2,
-    q1: q1Data.res, q3: q3Data.res, p10, p90,
-    min, max, range: max - min, histogram: { bins, min: data[0]?.lower || 0, max: data[data.length-1]?.upper || 0, binWidth: p },
+    q1: q1Data.res, q3: q3Data.res, p10, p90, min, max, range: max - min, 
+    histogram: { bins, min: data[0]?.lower || 0, max: data[data.length-1]?.upper || 0, binWidth: p },
     rawDataArray, detailedTable, tableTotals: finalTotals, codingP: p, assumedMean,
     mu1_u, mu2_u, mu3_u, mu4_u, m2_x, m3_x, m4_x,
     medL: medData.L, medFk: medData.Fk, medF: medData.f,
@@ -268,7 +259,7 @@ const calculateSingleStats = (rows: DataRow[]): StatsResult => {
   const sk4 = (q3 + q1 - 2 * median) / (q3 - q1); 
   const sk5 = (p90 + p10 - 2 * median) / (p90 - p10); 
 
-  const detailedTable: DetailedRow[] = tempTablePre.map(row => {
+  const detailedTable = tempTablePre.map(row => {
     const absDev = Math.abs(row.mid - mean);
     const fAbsDev = row.f * absDev;
     const fx = row.f * row.mid;
@@ -340,11 +331,8 @@ const Home: React.FC = () => {
     if(e) e.preventDefault();
     setError(''); setResults(null);
     try { 
-        if (inputMode === 'single') {
-            setResults(calculateSingleStats(rows)); 
-        } else {
-            setResults(calculateGroupedStats(rows));
-        }
+        if (inputMode === 'single') setResults(calculateSingleStats(rows)); 
+        else setResults(calculateGroupedStats(rows));
     } catch (err: any) { console.error(err); setError('Cek data input.'); }
   };
 
@@ -413,6 +401,8 @@ const Home: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans text-sm">
+      
+      {/* GLOBAL STYLE FOR PRINT */}
       <style jsx global>{`
         @media print {
           @page { size: auto; margin: 15mm; }
@@ -435,13 +425,27 @@ const Home: React.FC = () => {
             Statistik<span className="text-indigo-600">Pro</span>
           </h1>
         </div>
-        <div className="flex bg-slate-100 p-1 rounded-lg">
-           <button onClick={() => setInputMode('single')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${inputMode === 'single' ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}>Data Tunggal</button>
-           <button onClick={() => setInputMode('interval')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${inputMode === 'interval' ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}>Data Kelompok</button>
+        
+        {/* RIGHT SIDE: Download User Guide + Toggles */}
+        <div className="flex items-center gap-4">
+           {/* TOMBOL DOWNLOAD USER GUIDE */}
+           <a 
+             href="https://www.canva.com/design/DAG6c84xO2s/3w_ZdPTrblQTso8DHO5MMg/edit?utm_content=DAG6c84xO2s&utm_campaign=designshare&utm_medium=link2&utm_source=sharebutton" 
+             download="Panduan_Penggunaan_StatistikPro.pdf"
+             className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold text-slate-600 border border-slate-200 rounded-md hover:bg-slate-50 transition-all"
+           >
+             <span>📚</span> Panduan
+           </a>
+
+           <div className="flex bg-slate-100 p-1 rounded-lg">
+             <button onClick={() => setInputMode('single')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${inputMode === 'single' ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}>Data Tunggal</button>
+             <button onClick={() => setInputMode('interval')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${inputMode === 'interval' ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}>Data Kelompok</button>
+           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+          {/* SIDEBAR INPUT */}
           <div className="lg:col-span-4 xl:col-span-3 space-y-4 print:hidden">
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden sticky top-24">
               <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
